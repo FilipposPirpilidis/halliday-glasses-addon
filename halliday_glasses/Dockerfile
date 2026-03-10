@@ -3,6 +3,8 @@ FROM ${BUILD_FROM}
 
 ENV PYTHONUNBUFFERED=1
 
+RUN apk add --no-cache python3
+
 COPY app.py /app.py
 COPY run.sh /run.sh
 
