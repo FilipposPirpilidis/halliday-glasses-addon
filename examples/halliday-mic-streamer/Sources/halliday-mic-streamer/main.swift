@@ -621,46 +621,56 @@ struct HallidayMicStreamer {
             }
 
             keyboard.onSpaceDown = {
+                var streamingClient: WyomingStreamingClient?
+
                 stateQueue.sync {
                     guard !spaceDown, client == nil else { return }
                     spaceDown = true
 
-                    let streamingClient = WyomingStreamingClient(
+                    let createdClient = WyomingStreamingClient(
                         host: options.host,
                         port: options.port,
                         language: options.language,
                         cfg: cfg
                     )
 
-                    streamingClient.onPartialTranscript = { text in
+                    createdClient.onPartialTranscript = { text in
                         print("[partial] \(text)")
                     }
 
-                    streamingClient.onFinalTranscript = { text in
+                    createdClient.onFinalTranscript = { text in
                         print("[stt] \(text.isEmpty ? "(no text)" : text)")
-                        stateQueue.sync {
+                        stateQueue.async {
                             client = nil
                         }
                     }
 
-                    streamingClient.onError = { error in
-                        print("[err] \(error.localizedDescription)")
-                        stateQueue.sync {
+                    createdClient.onError = { error in
+                        print("[err] \(error)")
+                        stateQueue.async {
                             client = nil
                             spaceDown = false
                         }
                     }
 
-                    do {
-                        try streamingClient.start()
-                        client = streamingClient
-                        print("\n[rec] START")
-                        recorder.start { chunk in
-                            streamingClient.sendAudioChunk(chunk)
+                    client = createdClient
+                    streamingClient = createdClient
+                }
+
+                guard let streamingClient else { return }
+
+                do {
+                    try streamingClient.start()
+                    print("\n[rec] START")
+                    recorder.start { chunk in
+                        streamingClient.sendAudioChunk(chunk)
+                    }
+                } catch {
+                    print("[err] \(error)")
+                    stateQueue.async {
+                        if client === streamingClient {
+                            client = nil
                         }
-                    } catch {
-                        print("[err] \(error)")
-                        client = nil
                         spaceDown = false
                     }
                 }

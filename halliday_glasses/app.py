@@ -259,6 +259,21 @@ class HallidaySession:
         except Exception:
             LOGGER.exception("Partial transcription failed")
 
+    async def stop_partial_task(self) -> None:
+        task = self.state.partial_task
+        self.state.partial_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def send_event(self, event_type: str, data: Optional[dict[str, Any]] = None, payload: bytes = b"") -> None:
+        self.writer.write(event_bytes(event_type, data, payload))
+        await self.writer.drain()
+
 
 async def verify_upstream(cfg: ServerConfig) -> None:
     try:
@@ -274,21 +289,6 @@ async def verify_upstream(cfg: ServerConfig) -> None:
     LOGGER.info("Startup connectivity check succeeded for upstream whisper at %s:%s", cfg.whisper_host, cfg.whisper_port)
     writer.close()
     await writer.wait_closed()
-
-    async def stop_partial_task(self) -> None:
-        task = self.state.partial_task
-        self.state.partial_task = None
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    async def send_event(self, event_type: str, data: Optional[dict[str, Any]] = None, payload: bytes = b"") -> None:
-        self.writer.write(event_bytes(event_type, data, payload))
-        await self.writer.drain()
 
 
 async def serve(cfg: ServerConfig) -> None:
