@@ -5,12 +5,19 @@ ENV PYTHONUNBUFFERED=1
 ENV VOSK_MODEL_URL=https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
 ENV VOSK_MODEL_DIR=/models/vosk-model-small-en-us-0.15
 
-RUN apk add --no-cache curl unzip python3 py3-pip \
-    && pip3 install --no-cache-dir vosk==0.3.45 \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        python3 \
+        python3-pip \
+        unzip \
+    && python3 -m pip install --no-cache-dir --break-system-packages vosk==0.3.45 \
     && mkdir -p /models \
     && curl -L "${VOSK_MODEL_URL}" -o /tmp/vosk-model.zip \
     && unzip -q /tmp/vosk-model.zip -d /models \
-    && rm -f /tmp/vosk-model.zip
+    && rm -f /tmp/vosk-model.zip \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY app.py /app.py
 COPY run.sh /run.sh
