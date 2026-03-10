@@ -13,7 +13,7 @@ bashio::log.info "Starting Halliday Glasses add-on"
 bashio::log.info "Listening on ${SERVER_HOST}:${SERVER_PORT}"
 bashio::log.info "Forwarding transcription to Wyoming Whisper at ${WHISPER_HOST}:${WHISPER_PORT}"
 
-exec python3 /app.py \
+exec python /app.py \
   --listen-host "${SERVER_HOST}" \
   --listen-port "${SERVER_PORT}" \
   --whisper-host "${WHISPER_HOST}" \
