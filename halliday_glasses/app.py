@@ -94,7 +94,17 @@ class WhisperBridge:
         if not pcm16:
             return ""
 
-        reader, writer = await asyncio.open_connection(self.cfg.whisper_host, self.cfg.whisper_port)
+        LOGGER.info(
+            "Opening upstream whisper connection to %s:%s",
+            self.cfg.whisper_host,
+            self.cfg.whisper_port,
+        )
+        try:
+            reader, writer = await asyncio.open_connection(self.cfg.whisper_host, self.cfg.whisper_port)
+        except Exception as err:
+            raise RuntimeError(
+                f"Unable to connect to upstream whisper at {self.cfg.whisper_host}:{self.cfg.whisper_port}: {err}"
+            ) from err
         try:
             writer.write(event_bytes("transcribe", {"language": state.language}))
             writer.write(
@@ -217,8 +227,12 @@ class HallidaySession:
         if event_type == "audio-stop":
             self.state.final_requested = True
             await self.stop_partial_task()
-            text = await self.bridge.transcribe(self.state.pcm16, self.state)
-            await self.send_event("transcript", {"text": text})
+            try:
+                text = await self.bridge.transcribe(self.state.pcm16, self.state)
+                await self.send_event("transcript", {"text": text})
+            except Exception as err:
+                LOGGER.exception("Final transcription failed")
+                await self.send_event("error", {"message": str(err)})
             self.state.reset()
             return
 
@@ -245,6 +259,22 @@ class HallidaySession:
         except Exception:
             LOGGER.exception("Partial transcription failed")
 
+
+async def verify_upstream(cfg: ServerConfig) -> None:
+    try:
+        reader, writer = await asyncio.open_connection(cfg.whisper_host, cfg.whisper_port)
+    except Exception:
+        LOGGER.exception(
+            "Startup connectivity check failed for upstream whisper at %s:%s",
+            cfg.whisper_host,
+            cfg.whisper_port,
+        )
+        return
+
+    LOGGER.info("Startup connectivity check succeeded for upstream whisper at %s:%s", cfg.whisper_host, cfg.whisper_port)
+    writer.close()
+    await writer.wait_closed()
+
     async def stop_partial_task(self) -> None:
         task = self.state.partial_task
         self.state.partial_task = None
@@ -263,6 +293,7 @@ class HallidaySession:
 
 async def serve(cfg: ServerConfig) -> None:
     bridge = WhisperBridge(cfg)
+    await verify_upstream(cfg)
 
     async def on_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         session = HallidaySession(reader, writer, cfg, bridge)
