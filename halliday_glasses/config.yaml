@@ -20,7 +20,11 @@ options:
   server_host: "0.0.0.0"
   server_port: 10310
   language: "en"
+  model_variant: "0.15"
+  model_path: "/models/vosk-model-small-en-us-0.15"
 schema:
   server_host: str
   server_port: port
   language: str
+  model_variant: str
+  model_path: str
