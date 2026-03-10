@@ -16,9 +16,6 @@ case "${MODEL_VARIANT}" in
   "0.15")
     DEFAULT_MODEL_PATH="/models/vosk-model-small-en-us-0.15"
     ;;
-  "0.22")
-    DEFAULT_MODEL_PATH="/models/vosk-model-en-us-0.22"
-    ;;
   "zamia")
     DEFAULT_MODEL_PATH="/models/vosk-model-small-en-us-zamia-0.5"
     ;;

@@ -26,7 +26,7 @@ Default add-on options:
 - `server_host`: bind address for this add-on, default `0.0.0.0`
 - `server_port`: exposed Wyoming port for Halliday Glasses, default `10310`
 - `language`: transcription language hint, default `en`
-- `model_variant`: bundled model preset, one of `0.15`, `0.22`, or `zamia`
+- `model_variant`: bundled model preset, one of `0.15` or `zamia`
 - `model_path`: filesystem path to the Vosk model directory, default `/models/vosk-model-small-en-us-0.15`
 - `enable_openai_realtime`: switch backend from Vosk to OpenAI Realtime
 - `openai_api_key`: OpenAI API key for Realtime transcription
@@ -46,7 +46,6 @@ Default add-on options:
 - The container downloads the official Vosk small English model `vosk-model-small-en-us-0.15` during build from [Alpha Cephei](https://alphacephei.com/vosk/models).
 - The container bundles three English Vosk models during build:
   - `0.15` -> `/models/vosk-model-small-en-us-0.15`
-  - `0.22` -> `/models/vosk-model-en-us-0.22`
   - `zamia` -> `/models/vosk-model-small-en-us-zamia-0.5`
 - The add-on expects PCM16 mono input. Stereo or non-16-bit streams are rejected.
 - `model_variant` controls which bundled model is used. `model_path` can still override it if you want to point at a custom model under `/data/models/...`.
