@@ -26,6 +26,9 @@ options:
   language: "en"
   partial_interval_ms: 1500
   min_partial_audio_ms: 1200
+  silence_ms: 900
+  min_utterance_ms: 400
+  speech_threshold: 900
 schema:
   whisper_host: str
   whisper_port: port
@@ -34,3 +37,6 @@ schema:
   language: str
   partial_interval_ms: int(250,)
   min_partial_audio_ms: int(250,)
+  silence_ms: int(100,)
+  min_utterance_ms: int(100,)
+  speech_threshold: int(1,)

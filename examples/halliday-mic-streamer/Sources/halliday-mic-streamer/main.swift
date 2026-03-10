@@ -218,8 +218,6 @@ final class PushToTalkRecorder {
 }
 
 final class KeyboardMonitor {
-    var onSpaceDown: (() -> Void)?
-    var onSpaceUp: (() -> Void)?
     var onEscDown: (() -> Void)?
 
     private var eventTap: CFMachPort?
@@ -245,13 +243,9 @@ final class KeyboardMonitor {
             let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
 
             if type == .keyDown {
-                if keyCode == kVK_Space {
-                    monitor.onSpaceDown?()
-                } else if keyCode == kVK_Escape {
+                if keyCode == kVK_Escape {
                     monitor.onEscDown?()
                 }
-            } else if type == .keyUp, keyCode == kVK_Space {
-                monitor.onSpaceUp?()
             }
 
             return Unmanaged.passUnretained(event)
@@ -525,8 +519,6 @@ final class WyomingStreamingClient: @unchecked Sendable {
                     onPartialTranscript?(text)
                 } else if type == "transcript" {
                     onFinalTranscript?(text)
-                    close()
-                    return
                 } else if type == "error" {
                     let message = (data["message"] as? String ?? "Unknown Wyoming error").trimmingCharacters(in: .whitespacesAndNewlines)
                     throw NSError(domain: "HallidayMicStreamer", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
@@ -610,88 +602,53 @@ struct HallidayMicStreamer {
             let keyboard = KeyboardMonitor()
             let stateQueue = DispatchQueue(label: "halliday.app.state")
 
-            var spaceDown = false
             var client: WyomingStreamingClient?
 
-            print("Push-to-talk ready.")
-            print("Hold SPACE to stream. Release SPACE to finish. Press ESC to quit.")
+            print("Live streaming ready.")
+            print("Streaming microphone audio continuously. Press ESC to quit.")
             print("Target: \(options.host):\(options.port)")
             if let token = options.haToken, !token.isEmpty {
                 print("Home Assistant token detected but not used for direct Wyoming transport.")
             }
 
-            keyboard.onSpaceDown = {
-                var streamingClient: WyomingStreamingClient?
+            let streamingClient = WyomingStreamingClient(
+                host: options.host,
+                port: options.port,
+                language: options.language,
+                cfg: cfg
+            )
 
-                stateQueue.sync {
-                    guard !spaceDown, client == nil else { return }
-                    spaceDown = true
+            streamingClient.onPartialTranscript = { text in
+                print("[partial] \(text)")
+            }
 
-                    let createdClient = WyomingStreamingClient(
-                        host: options.host,
-                        port: options.port,
-                        language: options.language,
-                        cfg: cfg
-                    )
+            streamingClient.onFinalTranscript = { text in
+                print("[stt] \(text.isEmpty ? "(no text)" : text)")
+            }
 
-                    createdClient.onPartialTranscript = { text in
-                        print("[partial] \(text)")
-                    }
-
-                    createdClient.onFinalTranscript = { text in
-                        print("[stt] \(text.isEmpty ? "(no text)" : text)")
-                        stateQueue.async {
-                            client = nil
-                        }
-                    }
-
-                    createdClient.onError = { error in
-                        print("[err] \(error)")
-                        stateQueue.async {
-                            client = nil
-                            spaceDown = false
-                        }
-                    }
-
-                    client = createdClient
-                    streamingClient = createdClient
-                }
-
-                guard let streamingClient else { return }
-
-                do {
-                    try streamingClient.start()
-                    print("\n[rec] START")
-                    recorder.start { chunk in
-                        streamingClient.sendAudioChunk(chunk)
-                    }
-                } catch {
-                    print("[err] \(error)")
-                    stateQueue.async {
-                        if client === streamingClient {
-                            client = nil
-                        }
-                        spaceDown = false
-                    }
+            streamingClient.onError = { error in
+                print("[err] \(error)")
+                stateQueue.async {
+                    client = nil
                 }
             }
 
-            keyboard.onSpaceUp = {
-                stateQueue.sync {
-                    guard spaceDown else { return }
-                    spaceDown = false
-                    let durationMs = recorder.stop()
-                    print("[rec] STOP  (\(durationMs) ms)")
-                    client?.finish()
-                }
+            try streamingClient.start()
+            stateQueue.sync {
+                client = streamingClient
+            }
+            print("[rec] LIVE")
+            recorder.start { chunk in
+                streamingClient.sendAudioChunk(chunk)
             }
 
             keyboard.onEscDown = {
                 stateQueue.sync {
-                    _ = recorder.stop()
+                    let durationMs = recorder.stop()
+                    print("\n[rec] STOP  (\(durationMs) ms)")
+                    client?.finish()
                     client?.cancel()
                     client = nil
-                    spaceDown = false
                 }
                 print("\nBye.")
                 keyboard.stop()

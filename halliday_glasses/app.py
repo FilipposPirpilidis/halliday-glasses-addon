@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -59,6 +60,9 @@ class ServerConfig:
     language: str
     partial_interval_ms: int
     min_partial_audio_ms: int
+    silence_ms: int
+    min_utterance_ms: int
+    speech_threshold: int
 
 
 @dataclass(slots=True)
@@ -68,14 +72,20 @@ class AudioState:
     channels: int = 1
     language: str = "en"
     chunks: list[bytes] = field(default_factory=list)
+    utterance_chunks: list[bytes] = field(default_factory=list)
     partial_task: Optional[asyncio.Task] = None
     final_requested: bool = False
     last_partial_text: str = ""
+    speech_active: bool = False
+    silence_ms: int = 0
 
     def reset(self) -> None:
         self.chunks.clear()
+        self.utterance_chunks.clear()
         self.final_requested = False
         self.last_partial_text = ""
+        self.speech_active = False
+        self.silence_ms = 0
 
     @property
     def pcm16(self) -> bytes:
@@ -84,6 +94,30 @@ class AudioState:
     @property
     def duration_ms(self) -> int:
         return pcm_duration_ms(self.pcm16, self.rate, self.width, self.channels)
+
+    @property
+    def utterance_pcm16(self) -> bytes:
+        return b"".join(self.utterance_chunks)
+
+    @property
+    def utterance_duration_ms(self) -> int:
+        return pcm_duration_ms(self.utterance_pcm16, self.rate, self.width, self.channels)
+
+
+def pcm_rms(payload: bytes, width: int) -> float:
+    if width != 2 or not payload:
+        return 0.0
+
+    sample_count = len(payload) // 2
+    if sample_count == 0:
+        return 0.0
+
+    samples = memoryview(payload).cast("h")
+    total = 0.0
+    for sample in samples:
+        total += float(sample) * float(sample)
+
+    return math.sqrt(total / sample_count)
 
 
 class WhisperBridge:
@@ -222,14 +256,14 @@ class HallidaySession:
         if event_type == "audio-chunk":
             if payload:
                 self.state.chunks.append(payload)
+                await self.handle_audio_chunk(payload)
             return
 
         if event_type == "audio-stop":
             self.state.final_requested = True
             await self.stop_partial_task()
             try:
-                text = await self.bridge.transcribe(self.state.pcm16, self.state)
-                await self.send_event("transcript", {"text": text})
+                await self.flush_utterance()
             except Exception as err:
                 LOGGER.exception("Final transcription failed")
                 await self.send_event("error", {"message": str(err)})
@@ -242,15 +276,37 @@ class HallidaySession:
 
         LOGGER.debug("Ignoring event type: %s", event_type)
 
+    async def handle_audio_chunk(self, payload: bytes) -> None:
+        chunk_ms = pcm_duration_ms(payload, self.state.rate, self.state.width, self.state.channels)
+        if chunk_ms <= 0:
+            return
+
+        rms = pcm_rms(payload, self.state.width)
+        is_speech = rms >= self.cfg.speech_threshold
+
+        if is_speech:
+            self.state.speech_active = True
+            self.state.silence_ms = 0
+            self.state.utterance_chunks.append(payload)
+            return
+
+        if not self.state.speech_active:
+            return
+
+        self.state.utterance_chunks.append(payload)
+        self.state.silence_ms += chunk_ms
+        if self.state.silence_ms >= self.cfg.silence_ms:
+            await self.flush_utterance()
+
     async def partial_loop(self) -> None:
         interval = self.cfg.partial_interval_ms / 1000
         try:
             while not self.state.final_requested:
                 await asyncio.sleep(interval)
-                if self.state.duration_ms < self.cfg.min_partial_audio_ms:
+                if not self.state.speech_active or self.state.utterance_duration_ms < self.cfg.min_partial_audio_ms:
                     continue
 
-                text = await self.bridge.transcribe(self.state.pcm16, self.state)
+                text = await self.bridge.transcribe(self.state.utterance_pcm16, self.state)
                 if text and text != self.state.last_partial_text:
                     self.state.last_partial_text = text
                     await self.send_event("transcript-chunk", {"text": text})
@@ -273,6 +329,21 @@ class HallidaySession:
     async def send_event(self, event_type: str, data: Optional[dict[str, Any]] = None, payload: bytes = b"") -> None:
         self.writer.write(event_bytes(event_type, data, payload))
         await self.writer.drain()
+
+    async def flush_utterance(self) -> None:
+        utterance_pcm16 = self.state.utterance_pcm16
+        utterance_duration_ms = self.state.utterance_duration_ms
+        self.state.utterance_chunks.clear()
+        self.state.speech_active = False
+        self.state.silence_ms = 0
+        self.state.last_partial_text = ""
+
+        if utterance_duration_ms < self.cfg.min_utterance_ms or not utterance_pcm16:
+            return
+
+        text = await self.bridge.transcribe(utterance_pcm16, self.state)
+        if text:
+            await self.send_event("transcript", {"text": text})
 
 
 async def verify_upstream(cfg: ServerConfig) -> None:
@@ -315,6 +386,9 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--language", default="en")
     parser.add_argument("--partial-interval-ms", type=int, default=1500)
     parser.add_argument("--min-partial-audio-ms", type=int, default=1200)
+    parser.add_argument("--silence-ms", type=int, default=900)
+    parser.add_argument("--min-utterance-ms", type=int, default=400)
+    parser.add_argument("--speech-threshold", type=int, default=900)
     args = parser.parse_args()
 
     return ServerConfig(
@@ -325,6 +399,9 @@ def parse_args() -> ServerConfig:
         language=args.language,
         partial_interval_ms=args.partial_interval_ms,
         min_partial_audio_ms=args.min_partial_audio_ms,
+        silence_ms=args.silence_ms,
+        min_utterance_ms=args.min_utterance_ms,
+        speech_threshold=args.speech_threshold,
     )
 
 
