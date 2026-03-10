@@ -14,7 +14,7 @@ RUN apt-get update \
         python3 \
         python3-pip \
         unzip \
-    && python3 -m pip install --no-cache-dir --break-system-packages vosk==0.3.45 \
+    && python3 -m pip install --no-cache-dir --break-system-packages vosk==0.3.45 websockets==12.0 \
     && mkdir -p /models \
     && curl -L "${VOSK_MODEL_URL_015}" -o /tmp/vosk-model-015.zip \
     && unzip -q /tmp/vosk-model-015.zip -d /models \

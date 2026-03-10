@@ -22,9 +22,17 @@ options:
   language: "en"
   model_variant: "0.15"
   model_path: "/models/vosk-model-small-en-us-0.15"
+  enable_openai_realtime: false
+  openai_api_key: ""
+  openai_model: "gpt-4o-transcribe"
+  openai_prompt: ""
 schema:
   server_host: str
   server_port: port
   language: str
   model_variant: str
   model_path: str
+  enable_openai_realtime: bool
+  openai_api_key: str
+  openai_model: str
+  openai_prompt: str

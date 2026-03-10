@@ -1,6 +1,6 @@
 # Halliday Glasses Home Assistant Add-on
 
-This repository contains a custom Home Assistant add-on that exposes a Wyoming speech-to-text endpoint for Halliday Glasses and performs local transcription with Vosk.
+This repository contains a custom Home Assistant add-on that exposes a Wyoming speech-to-text endpoint for Halliday Glasses and can transcribe with either local Vosk or OpenAI Realtime.
 
 ## Contents
 
@@ -14,7 +14,8 @@ The add-on:
 
 - listens as a Wyoming server on port `10310`
 - accepts `audio-start`, `audio-chunk`, and `audio-stop` events with PCM16 mono audio
-- runs Vosk locally inside the add-on
+- runs Vosk locally inside the add-on by default
+- can optionally switch to OpenAI Realtime transcription
 - emits `transcript-chunk` updates while audio is still arriving
 - emits a final `transcript` event when Vosk detects an utterance boundary or when the stream stops
 
@@ -27,6 +28,10 @@ Default add-on options:
 - `language`: transcription language hint, default `en`
 - `model_variant`: bundled model preset, one of `0.15`, `0.22`, or `zamia`
 - `model_path`: filesystem path to the Vosk model directory, default `/models/vosk-model-small-en-us-0.15`
+- `enable_openai_realtime`: switch backend from Vosk to OpenAI Realtime
+- `openai_api_key`: OpenAI API key for Realtime transcription
+- `openai_model`: OpenAI transcription model, default `gpt-4o-transcribe`
+- `openai_prompt`: optional transcription prompt
 
 ## Home Assistant Setup
 
@@ -44,3 +49,5 @@ Default add-on options:
   - `zamia` -> `/models/vosk-model-small-en-us-zamia-0.5`
 - The add-on expects PCM16 mono input. Stereo or non-16-bit streams are rejected.
 - `model_variant` controls which bundled model is used. `model_path` can still override it if you want to point at a custom model under `/data/models/...`.
+- When `enable_openai_realtime` is `true`, the add-on disables Vosk recognition and forwards audio to the OpenAI Realtime API instead.
+- OpenAI Realtime transcription currently expects `audio/pcm` at `24 kHz` mono, so the add-on resamples incoming PCM16 mono audio before sending it. This is based on the current official OpenAI Realtime transcription docs: [Realtime transcription](https://developers.openai.com/api/docs/guides/realtime-transcription), [Realtime WebSocket](https://developers.openai.com/api/docs/guides/realtime-websocket).
