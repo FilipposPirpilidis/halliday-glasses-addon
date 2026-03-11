@@ -5,12 +5,14 @@ import base64
 import json
 import logging
 import struct
+from http import HTTPStatus
 from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import websockets
+from websockets.exceptions import ConnectionClosed
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
 
@@ -64,6 +66,8 @@ def result_text(result_json: str) -> str:
 class ServerConfig:
     listen_host: str
     listen_port: int
+    websocket_host: str
+    websocket_port: int
     language: str
     model_path: str
     stt_backend: str
@@ -673,6 +677,64 @@ class HallidaySession:
             self._closed = True
             raise
 
+
+class WebSocketSession(HallidaySession):
+    def __init__(self, websocket, cfg: ServerConfig, vosk_model: Optional[Model], translator: Translator):
+        self.websocket = websocket
+        super().__init__(None, None, cfg, vosk_model, translator)
+
+    async def run(self) -> None:
+        peer = getattr(self.websocket, "remote_address", None)
+        LOGGER.info("WebSocket client connected: %s", peer)
+        try:
+            async for message in self.websocket:
+                event, payload = decode_websocket_event(message)
+                await self.handle_event(event, payload)
+        except ConnectionClosed:
+            LOGGER.info("WebSocket client disconnected: %s", peer)
+        except Exception:
+            LOGGER.exception("WebSocket session failure for %s", peer)
+        finally:
+            await self.close_backend()
+            try:
+                await self.websocket.close()
+            except Exception:
+                pass
+
+    async def send_event(self, event_type: str, data: Optional[dict[str, Any]] = None, payload: bytes = b"") -> None:
+        event: dict[str, Any] = {"type": event_type}
+        if data:
+            event["data"] = data
+        if payload:
+            event["payload"] = base64.b64encode(payload).decode("ascii")
+        try:
+            await self.websocket.send(json.dumps(event, separators=(",", ":")))
+        except ConnectionClosed:
+            self._closed = True
+            raise
+
+
+def decode_websocket_event(message: Any) -> tuple[dict[str, Any], bytes]:
+    if isinstance(message, bytes):
+        raise ValueError("Binary websocket messages are not supported; send JSON text frames")
+
+    event = json.loads(message)
+    if not isinstance(event, dict):
+        raise ValueError("WebSocket event must be a JSON object")
+
+    data = event.get("data") or {}
+    if not isinstance(data, dict):
+        data = {}
+
+    payload = b""
+    audio_b64 = (event.get("audio") or "").strip()
+    payload_b64 = (event.get("payload") or "").strip()
+    encoded = audio_b64 or payload_b64
+    if encoded:
+        payload = base64.b64decode(encoded)
+
+    return {"type": event.get("type"), "data": data}, payload
+
     async def emit_partial_text(self, text: str) -> None:
         text = text.strip()
         if text:
@@ -807,17 +869,43 @@ async def serve(cfg: ServerConfig) -> None:
         session = HallidaySession(reader, writer, cfg, vosk_model, translator)
         await session.run()
 
+    async def on_websocket_connect(websocket) -> None:
+        if getattr(websocket, "path", "") not in {"", "/", "/ws"}:
+            await websocket.close(code=1008, reason="Unsupported path")
+            return
+        session = WebSocketSession(websocket, cfg, vosk_model, translator)
+        await session.run()
+
+    async def websocket_process_request(path, _headers):
+        if path in {"", "/"}:
+            body = b"Halliday Glasses WebSocket bridge. Connect a client to /ws.\n"
+            return HTTPStatus.OK, [("Content-Type", "text/plain; charset=utf-8")], body
+        return None
+
     server = await asyncio.start_server(on_connect, cfg.listen_host, cfg.listen_port)
+    websocket_server = await websockets.serve(
+        on_websocket_connect,
+        cfg.websocket_host,
+        cfg.websocket_port,
+        max_size=2**24,
+        ping_interval=20,
+        ping_timeout=20,
+        process_request=websocket_process_request,
+    )
     addresses = ", ".join(str(sock.getsockname()) for sock in (server.sockets or []))
     LOGGER.info("Halliday Glasses server listening on %s", addresses)
-    async with server:
-        await server.serve_forever()
+    ws_addresses = ", ".join(str(sock.getsockname()) for sock in (websocket_server.sockets or []))
+    LOGGER.info("Halliday Glasses WebSocket bridge listening on %s", ws_addresses)
+    async with server, websocket_server:
+        await asyncio.gather(server.serve_forever(), asyncio.Future())
 
 
 def parse_args() -> ServerConfig:
     parser = argparse.ArgumentParser()
     parser.add_argument("--listen-host", default="0.0.0.0")
     parser.add_argument("--listen-port", type=int, default=10310)
+    parser.add_argument("--websocket-host", default="0.0.0.0")
+    parser.add_argument("--websocket-port", type=int, default=8099)
     parser.add_argument("--language", default="en")
     parser.add_argument("--model-path", default="/models/vosk-model-small-en-us-0.15")
     parser.add_argument("--stt-backend", default="vosk")
@@ -855,6 +943,8 @@ def parse_args() -> ServerConfig:
     return ServerConfig(
         listen_host=args.listen_host,
         listen_port=args.listen_port,
+        websocket_host=args.websocket_host,
+        websocket_port=args.websocket_port,
         language=args.language,
         model_path=args.model_path,
         stt_backend=args.stt_backend,

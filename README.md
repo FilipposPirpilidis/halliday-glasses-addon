@@ -13,7 +13,7 @@ Set `stt_backend` to exactly one of these:
 ## Main Options
 
 - `server_host`: bind address, default `0.0.0.0`
-- `server_port`: exposed Wyoming port, default `10310`
+- `server_port`: internal Wyoming bridge port, default `10310`
 - `language`: language hint, default `en`
 - `stt_backend`: `vosk`, `openai`, or `whisplaybot`
 
@@ -56,18 +56,32 @@ For the LM8850 prebuilt image, see:
 
 ## Client Protocol
 
-This add-on does not expose a WebSocket endpoint. Clients connect with raw Wyoming TCP to `server_host:server_port`, usually `10310`.
+Clients should connect through the Home Assistant ingress WebSocket endpoint, not directly to the internal Wyoming TCP server.
+
+The external client URL is:
+
+```text
+ws://<home-assistant-host>:8123/api/hassio_ingress/<ingress_id>/ws
+```
+
+or:
+
+```text
+wss://<home-assistant-host>:8123/api/hassio_ingress/<ingress_id>/ws
+```
+
+Use the Home Assistant long-lived access token as:
+
+```text
+Authorization: Bearer <token>
+```
+
+To get `<ingress_id>`, open the add-on with **Open Web UI** and copy the `api/hassio_ingress/<ingress_id>` part from the browser URL.
 
 Each message is:
 
-1. one JSON header line ending with `\n`
-2. optional binary payload if `payload_length` is present
-
-Header example:
-
-```json
-{"type":"audio-chunk","data":{"rate":16000,"width":2,"channels":1},"payload_length":3200}
-```
+1. one JSON object per WebSocket text frame
+2. audio chunks are base64-encoded in the `audio` field
 
 ### Client -> Add-on
 
@@ -105,10 +119,8 @@ Example `audio-start`:
 Example `audio-chunk` header:
 
 ```json
-{"type":"audio-chunk","data":{"rate":16000,"width":2,"channels":1},"payload_length":3200}
+{"type":"audio-chunk","data":{"rate":16000,"width":2,"channels":1},"audio":"<base64-pcm16-mono>"}
 ```
-
-The bytes immediately after that header must be raw PCM16 mono audio.
 
 Example `translate-set`:
 

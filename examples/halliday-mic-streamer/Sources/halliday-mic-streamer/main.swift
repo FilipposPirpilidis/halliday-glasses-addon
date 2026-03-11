@@ -13,8 +13,10 @@ struct AudioConfig {
 }
 
 struct CLIOptions {
+    var scheme: String = "ws"
     var host: String = "homeassistant.local"
-    var port: Int = 10310
+    var port: Int = 8123
+    var ingressPath: String? = ProcessInfo.processInfo.environment["HA_INGRESS_PATH"]
     var language: String = "en"
     var haToken: String? = ProcessInfo.processInfo.environment["HA_TOKEN"]
     var translateEnabled: Bool?
@@ -28,6 +30,10 @@ struct CLIOptions {
         while index < args.count {
             let arg = args[index]
             switch arg {
+            case "--scheme":
+                index += 1
+                guard index < args.count else { throw CLIError.missingValue("--scheme") }
+                options.scheme = args[index]
             case "--host":
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--host") }
@@ -45,6 +51,10 @@ struct CLIOptions {
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--ha-token") }
                 options.haToken = args[index]
+            case "--ingress-path":
+                index += 1
+                guard index < args.count else { throw CLIError.missingValue("--ingress-path") }
+                options.ingressPath = args[index]
             case "--translate-enabled":
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--translate-enabled") }
@@ -108,6 +118,9 @@ enum AppError: Error, CustomStringConvertible {
     case malformedHeader
     case invalidJSON
     case emptyHost
+    case missingIngressPath
+    case missingHAToken
+    case invalidWebSocketURL
 
     var description: String {
         switch self {
@@ -129,6 +142,12 @@ enum AppError: Error, CustomStringConvertible {
             return "Invalid JSON received from server"
         case .emptyHost:
             return "Host cannot be empty"
+        case .missingIngressPath:
+            return "Missing Home Assistant ingress path"
+        case .missingHAToken:
+            return "Missing Home Assistant token"
+        case .invalidWebSocketURL:
+            return "Invalid WebSocket URL"
         }
     }
 }
@@ -441,26 +460,32 @@ func writeAll(stream: OutputStream, data: Data) throws {
     }
 }
 
-final class WyomingStreamingClient: @unchecked Sendable {
+final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
     var onPartialTranscript: ((String) -> Void)?
     var onFinalTranscript: ((String, String?, Bool) -> Void)?
     var onTranslationConfig: ((TranslationConfig) -> Void)?
     var onError: ((Error) -> Void)?
 
+    private let scheme: String
     private let host: String
     private let port: Int
+    private let ingressPath: String
+    private let haToken: String
     private let language: String
     private let cfg: AudioConfig
     private let writeQueue = DispatchQueue(label: "halliday.wyoming.write")
     private let stateQueue = DispatchQueue(label: "halliday.wyoming.state")
 
-    private var inputStream: InputStream?
-    private var outputStream: OutputStream?
+    private var session: URLSession?
+    private var task: URLSessionWebSocketTask?
     private var closed = false
 
-    init(host: String, port: Int, language: String, cfg: AudioConfig) {
+    init(scheme: String, host: String, port: Int, ingressPath: String, haToken: String, language: String, cfg: AudioConfig) {
+        self.scheme = scheme
         self.host = host
         self.port = port
+        self.ingressPath = ingressPath
+        self.haToken = haToken
         self.language = language
         self.cfg = cfg
     }
@@ -469,23 +494,25 @@ final class WyomingStreamingClient: @unchecked Sendable {
         guard !host.isEmpty else {
             throw AppError.emptyHost
         }
-
-        var readStream: Unmanaged<CFReadStream>?
-        var writeStream: Unmanaged<CFWriteStream>?
-        CFStreamCreatePairWithSocketToHost(nil, host as CFString, UInt32(port), &readStream, &writeStream)
-
-        guard let read = readStream?.takeRetainedValue(),
-              let write = writeStream?.takeRetainedValue() else {
-            throw AppError.streamConnectionFailed
+        guard !ingressPath.isEmpty else {
+            throw AppError.missingIngressPath
+        }
+        guard !haToken.isEmpty else {
+            throw AppError.missingHAToken
+        }
+        let trimmedPath = ingressPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(scheme)://\(host):\(port)/\(trimmedPath)/ws") else {
+            throw AppError.invalidWebSocketURL
         }
 
-        let input = read as InputStream
-        let output = write as OutputStream
-        input.open()
-        output.open()
-
-        inputStream = input
-        outputStream = output
+        let configuration = URLSessionConfiguration.default
+        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        self.session = session
+        var request = URLRequest(url: url)
+        request.addValue("Bearer \(haToken)", forHTTPHeaderField: "Authorization")
+        let task = session.webSocketTask(with: request)
+        self.task = task
+        task.resume()
 
         try send(eventType: "transcribe", data: ["language": language])
         try send(
@@ -493,9 +520,7 @@ final class WyomingStreamingClient: @unchecked Sendable {
             data: ["rate": Int(cfg.rate), "width": cfg.width, "channels": Int(cfg.channels)]
         )
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.readLoop()
-        }
+        readLoop()
     }
 
     func sendAudioChunk(_ chunk: Data) {
@@ -562,49 +587,52 @@ final class WyomingStreamingClient: @unchecked Sendable {
 
     private func send(eventType: String, data: [String: Any], payload: Data = Data()) throws {
         let isClosed = stateQueue.sync { closed }
-        guard !isClosed, let outputStream else { return }
-        try writeAll(stream: outputStream, data: try eventBytes(type: eventType, data: data, payload: payload))
+        guard !isClosed, let task else { return }
+
+        var message: [String: Any] = ["type": eventType]
+        if !data.isEmpty {
+            message["data"] = data
+        }
+        if !payload.isEmpty {
+            message["audio"] = payload.base64EncodedString()
+        }
+        let raw = try JSONSerialization.data(withJSONObject: message)
+        guard let text = String(data: raw, encoding: .utf8) else {
+            throw AppError.invalidJSON
+        }
+        final class SendState: @unchecked Sendable {
+            var error: Error?
+        }
+        let sendState = SendState()
+        let semaphore = DispatchSemaphore(value: 0)
+        task.send(.string(text)) { error in
+            sendState.error = error
+            semaphore.signal()
+        }
+        semaphore.wait()
+        if let sendError = sendState.error {
+            throw sendError
+        }
     }
 
     private func readLoop() {
-        do {
-            guard let inputStream else {
-                throw AppError.streamConnectionFailed
-            }
+        let isClosed = stateQueue.sync { closed }
+        guard !isClosed, let task else { return }
 
-            while true {
-                let isClosed = stateQueue.sync { closed }
-                if isClosed {
-                    return
-                }
-
-                let (event, _) = try readEvent(stream: inputStream)
-                let type = event["type"] as? String ?? ""
-                let data = event["data"] as? [String: Any] ?? [:]
-                let text = (data["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-
-                if type == "transcript-chunk", !text.isEmpty {
-                    onPartialTranscript?(text)
-                } else if type == "transcript" {
-                    let originalText = (data["original_text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let translated = (data["translated"] as? Bool) ?? false
-                    onFinalTranscript?(text, originalText, translated)
-                } else if type == "translate-config" {
-                    let config = TranslationConfig(
-                        enabled: (data["enabled"] as? Bool) ?? false,
-                        source: (data["source"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                        target: (data["target"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                        pair: (data["pair"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                        pairs: data["pairs"] as? [String] ?? []
-                    )
-                    onTranslationConfig?(config)
-                } else if type == "error" {
-                    let message = (data["message"] as? String ?? "Unknown Wyoming error").trimmingCharacters(in: .whitespacesAndNewlines)
-                    throw NSError(domain: "HallidayMicStreamer", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        task.receive { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case let .failure(error):
+                self.fail(error)
+            case let .success(message):
+                do {
+                    let event = try self.decodeWebSocketMessage(message)
+                    try self.handleServerEvent(event)
+                    self.readLoop()
+                } catch {
+                    self.fail(error)
                 }
             }
-        } catch {
-            fail(error)
         }
     }
 
@@ -634,10 +662,54 @@ final class WyomingStreamingClient: @unchecked Sendable {
     }
 
     private func closeStreams() {
-        inputStream?.close()
-        outputStream?.close()
-        inputStream = nil
-        outputStream = nil
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        session?.invalidateAndCancel()
+        session = nil
+    }
+
+    private func decodeWebSocketMessage(_ message: URLSessionWebSocketTask.Message) throws -> [String: Any] {
+        switch message {
+        case let .string(text):
+            guard let data = text.data(using: .utf8),
+                  let decoded = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw AppError.invalidJSON
+            }
+            return decoded
+        case let .data(data):
+            guard let decoded = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw AppError.invalidJSON
+            }
+            return decoded
+        @unknown default:
+            throw AppError.invalidJSON
+        }
+    }
+
+    private func handleServerEvent(_ event: [String: Any]) throws {
+        let type = event["type"] as? String ?? ""
+        let data = event["data"] as? [String: Any] ?? [:]
+        let text = (data["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if type == "transcript-chunk", !text.isEmpty {
+            onPartialTranscript?(text)
+        } else if type == "transcript" {
+            let originalText = (data["original_text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let translated = (data["translated"] as? Bool) ?? false
+            onFinalTranscript?(text, originalText, translated)
+        } else if type == "translate-config" {
+            let config = TranslationConfig(
+                enabled: (data["enabled"] as? Bool) ?? false,
+                source: (data["source"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                target: (data["target"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                pair: (data["pair"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                pairs: data["pairs"] as? [String] ?? []
+            )
+            onTranslationConfig?(config)
+        } else if type == "error" {
+            let message = (data["message"] as? String ?? "Unknown Halliday error").trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NSError(domain: "HallidayMicStreamer", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        }
     }
 }
 
@@ -660,9 +732,8 @@ func requestMicrophonePermission() -> Bool {
 }
 
 func printUsageAndExit() -> Never {
-    print("Usage: halliday-mic-streamer [--host HOST] [--port PORT] [--language LANG] [--ha-token TOKEN] [--translate-enabled true|false] [--translate-source LANG] [--translate-target LANG]")
-    print("  Default target: homeassistant.local:10310")
-    print("  HA_TOKEN is optional and not used for direct Wyoming TCP streaming.")
+    print("Usage: halliday-mic-streamer [--scheme ws|wss] [--host HOST] [--port PORT] --ingress-path api/hassio_ingress/<id> --ha-token TOKEN [--language LANG] [--translate-enabled true|false] [--translate-source LANG] [--translate-target LANG]")
+    print("  Default target: ws://homeassistant.local:8123/api/hassio_ingress/<id>/ws")
     exit(0)
 }
 
@@ -681,13 +752,13 @@ struct HallidayMicStreamer {
             let keyboard = KeyboardMonitor()
             let stateQueue = DispatchQueue(label: "halliday.app.state")
 
-            var client: WyomingStreamingClient?
+            var client: HallidayWebSocketClient?
 
             print("Live streaming ready.")
             print("Streaming microphone audio continuously. Press ESC to quit.")
-            print("Target: \(options.host):\(options.port)")
-            if let token = options.haToken, !token.isEmpty {
-                print("Home Assistant token detected but not used for direct Wyoming transport.")
+            print("Target: \(options.scheme)://\(options.host):\(options.port)")
+            if let ingressPath = options.ingressPath, !ingressPath.isEmpty {
+                print("Ingress path: \(ingressPath)")
             }
             if let translateEnabled = options.translateEnabled {
                 print("Requested translation: \(translateEnabled ? "enabled" : "disabled")")
@@ -696,9 +767,12 @@ struct HallidayMicStreamer {
                 print("Requested translation pair: \(translateSource)-\(translateTarget)")
             }
 
-            let streamingClient = WyomingStreamingClient(
+            let streamingClient = HallidayWebSocketClient(
+                scheme: options.scheme,
                 host: options.host,
                 port: options.port,
+                ingressPath: options.ingressPath ?? "",
+                haToken: options.haToken ?? "",
                 language: options.language,
                 cfg: cfg
             )
