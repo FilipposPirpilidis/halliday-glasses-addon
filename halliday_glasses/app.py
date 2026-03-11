@@ -63,7 +63,7 @@ class ServerConfig:
     listen_port: int
     language: str
     model_path: str
-    enable_openai_realtime: bool
+    stt_backend: str
     openai_api_key: str
     openai_realtime_model: str
     openai_transcription_model: str
@@ -71,6 +71,7 @@ class ServerConfig:
     openai_vad_threshold: float
     openai_vad_prefix_padding_ms: int
     openai_vad_silence_duration_ms: int
+    whisplay_url: str
 
 
 @dataclass(slots=True)
@@ -144,7 +145,7 @@ class OpenAIRealtimeBackend:
         if state.width != 2 or state.channels != 1:
             raise RuntimeError("OpenAI Realtime backend expects PCM16 mono audio")
         if not self.cfg.openai_api_key:
-            raise RuntimeError("OpenAI Realtime backend enabled but openai_api_key is empty")
+            raise RuntimeError("OpenAI backend selected but openai_api_key is empty")
 
         realtime_model = quote(self.cfg.openai_realtime_model, safe="")
         uri = f"wss://api.openai.com/v1/realtime?model={realtime_model}"
@@ -275,6 +276,88 @@ class OpenAIRealtimeBackend:
         return converted
 
 
+class WhisplayBackend:
+    def __init__(self, cfg: ServerConfig, send_event):
+        self.cfg = cfg
+        self.send_event = send_event
+        self.websocket = None
+        self.receive_task: Optional[asyncio.Task] = None
+
+    async def start(self, state: AudioState) -> None:
+        if state.width != 2 or state.channels != 1:
+            raise RuntimeError("Whisplay backend expects PCM16 mono audio")
+
+        self.websocket = await websockets.connect(self.cfg.whisplay_url, max_size=None)
+        self.receive_task = asyncio.create_task(self.receive_loop())
+        await self.websocket.send(
+            json.dumps(
+                {
+                    "type": "start",
+                    "sampleRate": state.rate,
+                    "language": state.language,
+                }
+            )
+        )
+
+    async def process_chunk(self, payload: bytes, _state: AudioState) -> None:
+        if self.websocket is None or not payload:
+            return
+
+        await self.websocket.send(
+            json.dumps(
+                {
+                    "type": "audio",
+                    "data": base64.b64encode(payload).decode("ascii"),
+                }
+            )
+        )
+
+    async def finish(self) -> None:
+        if self.websocket is None:
+            return
+        await self.websocket.send(json.dumps({"type": "stop"}))
+        await asyncio.sleep(0.25)
+
+    async def close(self) -> None:
+        if self.receive_task is not None:
+            self.receive_task.cancel()
+            try:
+                await self.receive_task
+            except asyncio.CancelledError:
+                pass
+            self.receive_task = None
+
+        if self.websocket is not None:
+            await self.websocket.close()
+            self.websocket = None
+
+    async def receive_loop(self) -> None:
+        websocket = self.websocket
+        if websocket is None:
+            return
+
+        try:
+            async for message in websocket:
+                event = json.loads(message)
+                event_type = event.get("type", "")
+                if event_type == "partial":
+                    text = (event.get("text") or "").strip()
+                    if text:
+                        await self.send_event("transcript-chunk", {"text": text})
+                elif event_type == "final":
+                    text = (event.get("text") or "").strip()
+                    if text:
+                        await self.send_event("transcript", {"text": text})
+                elif event_type == "error":
+                    detail = (event.get("detail") or "Whisplay error").strip()
+                    await self.send_event("error", {"message": detail})
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            LOGGER.exception("Whisplay receive loop failed")
+            await self.send_event("error", {"message": str(err)})
+
+
 class HallidaySession:
     def __init__(
         self,
@@ -312,7 +395,11 @@ class HallidaySession:
         data = event.get("data") or {}
 
         if event_type == "describe":
-            backend_name = "OpenAI Realtime" if self.cfg.enable_openai_realtime else "Vosk"
+            backend_name = {
+                "vosk": "Vosk",
+                "openai": "OpenAI Realtime",
+                "whisplay": "Whisplay",
+            }.get(self.cfg.stt_backend, self.cfg.stt_backend)
             await self.send_event(
                 "info",
                 {
@@ -363,8 +450,10 @@ class HallidaySession:
             return
 
     def build_backend(self):
-        if self.cfg.enable_openai_realtime:
+        if self.cfg.stt_backend == "openai":
             return OpenAIRealtimeBackend(self.cfg, self.send_event)
+        if self.cfg.stt_backend == "whisplay":
+            return WhisplayBackend(self.cfg, self.send_event)
         if self.vosk_model is None:
             raise RuntimeError("Vosk backend selected but no model is loaded")
         return VoskBackend(self.cfg, self.vosk_model, self.send_event)
@@ -381,16 +470,18 @@ class HallidaySession:
 
 async def serve(cfg: ServerConfig) -> None:
     vosk_model = None
-    if not cfg.enable_openai_realtime:
+    if cfg.stt_backend == "vosk":
         LOGGER.info("Loading Vosk model from %s", cfg.model_path)
         vosk_model = Model(cfg.model_path)
         LOGGER.info("Vosk model loaded")
-    if cfg.enable_openai_realtime:
+    if cfg.stt_backend == "openai":
         LOGGER.info(
             "OpenAI Realtime backend enabled with session model %s and transcription model %s",
             cfg.openai_realtime_model,
             cfg.openai_transcription_model,
         )
+    if cfg.stt_backend == "whisplay":
+        LOGGER.info("Whisplay backend enabled with websocket %s", cfg.whisplay_url)
 
     async def on_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         session = HallidaySession(reader, writer, cfg, vosk_model)
@@ -409,7 +500,7 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--listen-port", type=int, default=10310)
     parser.add_argument("--language", default="en")
     parser.add_argument("--model-path", default="/models/vosk-model-small-en-us-0.15")
-    parser.add_argument("--enable-openai-realtime", action="store_true")
+    parser.add_argument("--stt-backend", default="vosk")
     parser.add_argument("--openai-api-key", default="")
     parser.add_argument("--openai-realtime-model", default="gpt-realtime-mini")
     parser.add_argument("--openai-transcription-model", default="gpt-4o-mini-transcribe")
@@ -417,6 +508,7 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--openai-vad-threshold", type=float, default=0.5)
     parser.add_argument("--openai-vad-prefix-padding-ms", type=int, default=300)
     parser.add_argument("--openai-vad-silence-duration-ms", type=int, default=500)
+    parser.add_argument("--whisplay-url", default="ws://192.168.2.29:8090/asr/live")
     args = parser.parse_args()
 
     return ServerConfig(
@@ -424,7 +516,7 @@ def parse_args() -> ServerConfig:
         listen_port=args.listen_port,
         language=args.language,
         model_path=args.model_path,
-        enable_openai_realtime=args.enable_openai_realtime,
+        stt_backend=args.stt_backend,
         openai_api_key=args.openai_api_key,
         openai_realtime_model=args.openai_realtime_model,
         openai_transcription_model=args.openai_transcription_model,
@@ -432,6 +524,7 @@ def parse_args() -> ServerConfig:
         openai_vad_threshold=args.openai_vad_threshold,
         openai_vad_prefix_padding_ms=args.openai_vad_prefix_padding_ms,
         openai_vad_silence_duration_ms=args.openai_vad_silence_duration_ms,
+        whisplay_url=args.whisplay_url,
     )
 
 

@@ -1,6 +1,6 @@
 # Halliday Glasses Home Assistant Add-on
 
-This repository contains a custom Home Assistant add-on that exposes a Wyoming speech-to-text endpoint for Halliday Glasses and can transcribe with either local Vosk or OpenAI Realtime.
+This repository contains a custom Home Assistant add-on that exposes a Wyoming speech-to-text endpoint for Halliday Glasses and can transcribe with local Vosk, OpenAI Realtime, or a remote Whisplay bridge.
 
 ## Contents
 
@@ -16,6 +16,7 @@ The add-on:
 - accepts `audio-start`, `audio-chunk`, and `audio-stop` events with PCM16 mono audio
 - runs Vosk locally inside the add-on by default
 - can optionally switch to OpenAI Realtime transcription
+- can optionally switch to a remote Whisplay bridge over WebSocket
 - emits `transcript-chunk` updates while audio is still arriving
 - emits a final `transcript` event when Vosk detects an utterance boundary or when the stream stops
 
@@ -26,13 +27,14 @@ Default add-on options:
 - `server_host`: bind address for this add-on, default `0.0.0.0`
 - `server_port`: exposed Wyoming port for Halliday Glasses, default `10310`
 - `language`: transcription language hint, default `en`
+- `stt_backend`: one of `vosk`, `openai`, or `whisplay`
 - `model_variant`: bundled model preset, one of `0.15` or `zamia`
 - `model_path`: filesystem path to the Vosk model directory, default `/models/vosk-model-small-en-us-0.15`
-- `enable_openai_realtime`: switch backend from Vosk to OpenAI Realtime
 - `openai_api_key`: OpenAI API key for Realtime transcription
 - `openai_realtime_model`: realtime session model, default `gpt-realtime-mini`
 - `openai_transcription_model`: transcription model inside the realtime session, default `gpt-4o-mini-transcribe`
 - `openai_prompt`: optional transcription prompt
+- `whisplay_url`: WebSocket endpoint of the Whisplay bridge, default `ws://192.168.2.29:8090/asr/live`
 
 ## Home Assistant Setup
 
@@ -49,5 +51,6 @@ Default add-on options:
   - `zamia` -> `/models/vosk-model-small-en-us-zamia-0.5`
 - The add-on expects PCM16 mono input. Stereo or non-16-bit streams are rejected.
 - `model_variant` controls which bundled model is used. `model_path` can still override it if you want to point at a custom model under `/data/models/...`.
-- When `enable_openai_realtime` is `true`, the add-on disables Vosk recognition and forwards audio to the OpenAI Realtime API instead.
+- When `stt_backend: openai`, the add-on disables Vosk recognition and forwards audio to the OpenAI Realtime API instead.
 - OpenAI Realtime transcription currently expects `audio/pcm` at `24 kHz` mono, so the add-on resamples incoming PCM16 mono audio before sending it. This is based on the current official OpenAI Realtime transcription docs: [Realtime transcription](https://developers.openai.com/api/docs/guides/realtime-transcription), [Realtime WebSocket](https://developers.openai.com/api/docs/guides/realtime-websocket).
+- When `stt_backend: whisplay`, the add-on forwards PCM16 mono audio to the Whisplay bridge using its `/asr/live` WebSocket protocol.
