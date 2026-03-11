@@ -27,7 +27,7 @@ options:
   openai_realtime_model: "gpt-realtime-mini"
   openai_transcription_model: "gpt-4o-mini-transcribe"
   openai_prompt: ""
-  whisplay_url: "ws://192.168.2.29:8090/asr/live"
+  whisplay_recognize_url: "http://192.168.2.29:8801/recognize"
 schema:
   server_host: str
   server_port: port
@@ -39,4 +39,4 @@ schema:
   openai_realtime_model: str
   openai_transcription_model: str
   openai_prompt: str
-  whisplay_url: str
+  whisplay_recognize_url: str

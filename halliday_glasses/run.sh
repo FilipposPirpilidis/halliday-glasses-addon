@@ -11,7 +11,7 @@ OPENAI_API_KEY="$(bashio::config 'openai_api_key')"
 OPENAI_REALTIME_MODEL="$(bashio::config 'openai_realtime_model')"
 OPENAI_TRANSCRIPTION_MODEL="$(bashio::config 'openai_transcription_model')"
 OPENAI_PROMPT="$(bashio::config 'openai_prompt')"
-WHISPLAY_URL="$(bashio::config 'whisplay_url')"
+WHISPLAY_RECOGNIZE_URL="$(bashio::config 'whisplay_recognize_url')"
 
 case "${MODEL_VARIANT}" in
   "0.15")
@@ -52,14 +52,14 @@ if [ "${STT_BACKEND}" = "openai" ]; then
     --openai-prompt "${OPENAI_PROMPT}"
 elif [ "${STT_BACKEND}" = "whisplay" ]; then
   bashio::log.info "Whisplay backend enabled"
-  bashio::log.info "Whisplay websocket ${WHISPLAY_URL}"
+  bashio::log.info "Whisplay recognize URL ${WHISPLAY_RECOGNIZE_URL}"
   exec python3 /app.py \
     --listen-host "${SERVER_HOST}" \
     --listen-port "${SERVER_PORT}" \
     --language "${LANGUAGE}" \
     --stt-backend "${STT_BACKEND}" \
     --model-path "${RESOLVED_MODEL_PATH}" \
-    --whisplay-url "${WHISPLAY_URL}"
+    --whisplay-recognize-url "${WHISPLAY_RECOGNIZE_URL}"
 else
   bashio::log.info "Using Vosk backend"
   bashio::log.info "Using Vosk model variant ${MODEL_VARIANT}"

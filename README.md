@@ -1,6 +1,6 @@
 # Halliday Glasses Home Assistant Add-on
 
-This repository contains a custom Home Assistant add-on that exposes a Wyoming speech-to-text endpoint for Halliday Glasses and can transcribe with local Vosk, OpenAI Realtime, or a remote Whisplay bridge.
+This repository contains a custom Home Assistant add-on that exposes a Wyoming speech-to-text endpoint for Halliday Glasses and can transcribe with local Vosk, OpenAI Realtime, or a remote Whisplay/Faster-Whisper HTTP recognizer.
 
 ## Contents
 
@@ -16,7 +16,7 @@ The add-on:
 - accepts `audio-start`, `audio-chunk`, and `audio-stop` events with PCM16 mono audio
 - runs Vosk locally inside the add-on by default
 - can optionally switch to OpenAI Realtime transcription
-- can optionally switch to a remote Whisplay bridge over WebSocket
+- can optionally switch to a remote Whisplay/Faster-Whisper recognizer over HTTP
 - emits `transcript-chunk` updates while audio is still arriving
 - emits a final `transcript` event when Vosk detects an utterance boundary or when the stream stops
 
@@ -34,7 +34,7 @@ Default add-on options:
 - `openai_realtime_model`: realtime session model, default `gpt-realtime-mini`
 - `openai_transcription_model`: transcription model inside the realtime session, default `gpt-4o-mini-transcribe`
 - `openai_prompt`: optional transcription prompt
-- `whisplay_url`: WebSocket endpoint of the Whisplay bridge, default `ws://192.168.2.29:8090/asr/live`
+- `whisplay_recognize_url`: HTTP recognize endpoint of the Whisplay/Faster-Whisper service, default `http://192.168.2.29:8801/recognize`
 
 ## Home Assistant Setup
 
@@ -53,4 +53,4 @@ Default add-on options:
 - `model_variant` controls which bundled model is used. `model_path` can still override it if you want to point at a custom model under `/data/models/...`.
 - When `stt_backend: openai`, the add-on disables Vosk recognition and forwards audio to the OpenAI Realtime API instead.
 - OpenAI Realtime transcription currently expects `audio/pcm` at `24 kHz` mono, so the add-on resamples incoming PCM16 mono audio before sending it. This is based on the current official OpenAI Realtime transcription docs: [Realtime transcription](https://developers.openai.com/api/docs/guides/realtime-transcription), [Realtime WebSocket](https://developers.openai.com/api/docs/guides/realtime-websocket).
-- When `stt_backend: whisplay`, the add-on forwards PCM16 mono audio to the Whisplay bridge using its `/asr/live` WebSocket protocol.
+- When `stt_backend: whisplay`, the add-on talks directly to the Pi `recognize` HTTP API, periodically transcribes a trailing audio window for partial captions, and emits final captions on silence or stop.

@@ -4,9 +4,11 @@ import audioop
 import base64
 import json
 import logging
+import struct
 from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 import websockets
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
@@ -71,7 +73,13 @@ class ServerConfig:
     openai_vad_threshold: float
     openai_vad_prefix_padding_ms: int
     openai_vad_silence_duration_ms: int
-    whisplay_url: str
+    whisplay_recognize_url: str
+    whisplay_timeout_seconds: float
+    whisplay_partial_window_seconds: float
+    whisplay_partial_inference_seconds: float
+    whisplay_auto_final_silence_ms: int
+    whisplay_auto_final_min_seconds: float
+    whisplay_auto_final_silence_level: int
 
 
 @dataclass(slots=True)
@@ -80,9 +88,10 @@ class AudioState:
     width: int = 2
     channels: int = 1
     language: str = "en"
+    chunks: bytearray | None = None
 
     def reset(self) -> None:
-        return
+        self.chunks = bytearray()
 
 
 class VoskBackend:
@@ -280,82 +289,183 @@ class WhisplayBackend:
     def __init__(self, cfg: ServerConfig, send_event):
         self.cfg = cfg
         self.send_event = send_event
-        self.websocket = None
-        self.receive_task: Optional[asyncio.Task] = None
+        self.raw_pcm = bytearray()
+        self.bytes_transcribed_for_partial = 0
+        self.last_partial_text = ""
+        self.partial_retry_not_before = 0.0
+        self.consecutive_silence_bytes = 0
+        self.pending_audio_bytes = 0
 
     async def start(self, state: AudioState) -> None:
         if state.width != 2 or state.channels != 1:
             raise RuntimeError("Whisplay backend expects PCM16 mono audio")
+        self.raw_pcm.clear()
+        self.bytes_transcribed_for_partial = 0
+        self.last_partial_text = ""
+        self.partial_retry_not_before = 0.0
+        self.consecutive_silence_bytes = 0
+        self.pending_audio_bytes = 0
 
-        self.websocket = await websockets.connect(self.cfg.whisplay_url, max_size=None)
-        self.receive_task = asyncio.create_task(self.receive_loop())
-        await self.websocket.send(
-            json.dumps(
-                {
-                    "type": "start",
-                    "sampleRate": state.rate,
-                    "language": state.language,
-                }
-            )
-        )
-
-    async def process_chunk(self, payload: bytes, _state: AudioState) -> None:
-        if self.websocket is None or not payload:
+    async def process_chunk(self, payload: bytes, state: AudioState) -> None:
+        if not payload:
             return
+        self.raw_pcm.extend(payload)
+        self.pending_audio_bytes += len(payload)
+        if is_pcm_chunk_silent(payload, self.cfg.whisplay_auto_final_silence_level):
+            self.consecutive_silence_bytes += len(payload)
+        else:
+            self.consecutive_silence_bytes = 0
 
-        await self.websocket.send(
-            json.dumps(
-                {
-                    "type": "audio",
-                    "data": base64.b64encode(payload).decode("ascii"),
-                }
-            )
-        )
+        partial = await self.maybe_partial(state)
+        if partial:
+            await self.send_event("transcript-chunk", {"text": partial})
+
+        if self.should_auto_finalize(state):
+            final_text = await self.finalize(state)
+            if final_text:
+                await self.send_event("transcript", {"text": final_text})
+            self.reset_stream_state()
 
     async def finish(self) -> None:
-        if self.websocket is None:
-            return
-        await self.websocket.send(json.dumps({"type": "stop"}))
-        await asyncio.sleep(0.25)
+        return
 
     async def close(self) -> None:
-        if self.receive_task is not None:
-            self.receive_task.cancel()
-            try:
-                await self.receive_task
-            except asyncio.CancelledError:
-                pass
-            self.receive_task = None
+        self.reset_stream_state()
 
-        if self.websocket is not None:
-            await self.websocket.close()
-            self.websocket = None
+    async def maybe_partial(self, state: AudioState) -> str:
+        now = asyncio.get_running_loop().time()
+        if now < self.partial_retry_not_before:
+            return ""
 
-    async def receive_loop(self) -> None:
-        websocket = self.websocket
-        if websocket is None:
-            return
+        min_bytes_for_partial = max(
+            int(float(state.rate) * 2.0 * self.cfg.whisplay_partial_window_seconds),
+            state.rate,
+        )
+        pending_bytes = len(self.raw_pcm) - self.bytes_transcribed_for_partial
+        if pending_bytes < min_bytes_for_partial:
+            return ""
+
+        bytes_per_second = state.rate * 2
+        partial_bytes = int(float(bytes_per_second) * self.cfg.whisplay_partial_inference_seconds)
+        clipped_pcm = bytes(self.raw_pcm[-max(partial_bytes, bytes_per_second):])
 
         try:
-            async for message in websocket:
-                event = json.loads(message)
-                event_type = event.get("type", "")
-                if event_type == "partial":
-                    text = (event.get("text") or "").strip()
-                    if text:
-                        await self.send_event("transcript-chunk", {"text": text})
-                elif event_type == "final":
-                    text = (event.get("text") or "").strip()
-                    if text:
-                        await self.send_event("transcript", {"text": text})
-                elif event_type == "error":
-                    detail = (event.get("detail") or "Whisplay error").strip()
-                    await self.send_event("error", {"message": detail})
-        except asyncio.CancelledError:
+            transcript = await self.transcribe_pcm(clipped_pcm, state.rate)
+            filtered = transcript.strip()
+            previous = self.last_partial_text.strip()
+            self.last_partial_text = filtered
+            self.bytes_transcribed_for_partial = len(self.raw_pcm)
+            self.partial_retry_not_before = 0.0
+            if filtered and filtered != previous:
+                return filtered
+            return ""
+        except RuntimeError as err:
+            if "busy" in str(err).lower():
+                self.partial_retry_not_before = now + 0.75
+                return ""
             raise
+
+    async def finalize(self, state: AudioState) -> str:
+        if not self.raw_pcm:
+            return ""
+        try:
+            transcript = await self.transcribe_pcm(bytes(self.raw_pcm), state.rate)
+            normalized = transcript.strip()
+            return normalized or self.last_partial_text.strip()
+        except RuntimeError as err:
+            if "busy" in str(err).lower():
+                return self.last_partial_text.strip()
+            raise
+
+    async def transcribe_pcm(self, pcm: bytes, sample_rate: int) -> str:
+        wav = encode_wav_pcm16_mono(pcm, sample_rate)
+        payload = json.dumps({"base64": base64.b64encode(wav).decode("ascii")}).encode("utf-8")
+        request = Request(
+            self.cfg.whisplay_recognize_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        def _request() -> tuple[int, str]:
+            with urlopen(request, timeout=max(self.cfg.whisplay_timeout_seconds, 10.0)) as response:
+                status = getattr(response, "status", response.getcode())
+                body = response.read().decode("utf-8")
+                return status, body
+
+        try:
+            status, body = await asyncio.to_thread(_request)
         except Exception as err:
-            LOGGER.exception("Whisplay receive loop failed")
-            await self.send_event("error", {"message": str(err)})
+            raise RuntimeError(f"Whisplay request failed: {err}") from err
+
+        if not (200 <= status <= 299):
+            raise RuntimeError(f"Whisplay request failed (status {status}): {body}")
+
+        try:
+            decoded = json.loads(body)
+        except json.JSONDecodeError as err:
+            raise RuntimeError(f"Whisplay response is malformed: {body}") from err
+
+        error = (decoded.get("error") or "").strip()
+        if error:
+            raise RuntimeError(error)
+
+        return (decoded.get("recognition") or "").strip()
+
+    def should_auto_finalize(self, state: AudioState) -> bool:
+        bytes_per_second = state.rate * 2
+        min_bytes = max(int(float(bytes_per_second) * self.cfg.whisplay_auto_final_min_seconds), state.rate)
+        silence_bytes = int(float(bytes_per_second) * float(self.cfg.whisplay_auto_final_silence_ms) / 1000.0)
+        return (
+            self.pending_audio_bytes >= min_bytes
+            and self.consecutive_silence_bytes >= max(silence_bytes, state.rate // 2)
+        )
+
+    def reset_stream_state(self) -> None:
+        self.raw_pcm.clear()
+        self.bytes_transcribed_for_partial = 0
+        self.last_partial_text = ""
+        self.partial_retry_not_before = 0.0
+        self.consecutive_silence_bytes = 0
+        self.pending_audio_bytes = 0
+
+
+def encode_wav_pcm16_mono(pcm: bytes, sample_rate: int) -> bytes:
+    channels = 1
+    bits_per_sample = 16
+    bytes_per_sample = bits_per_sample // 8
+    byte_rate = sample_rate * channels * bytes_per_sample
+    block_align = channels * bytes_per_sample
+    data_size = len(pcm)
+    riff_chunk_size = 36 + data_size
+
+    header = b"".join(
+        [
+            b"RIFF",
+            struct.pack("<I", riff_chunk_size),
+            b"WAVE",
+            b"fmt ",
+            struct.pack("<IHHIIHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample),
+            b"data",
+            struct.pack("<I", data_size),
+        ]
+    )
+    return header + pcm
+
+
+def is_pcm_chunk_silent(chunk: bytes, threshold: int) -> bool:
+    if len(chunk) < 2:
+        return True
+
+    peak = 0
+    for index in range(0, len(chunk) - 1, 2):
+        sample = int.from_bytes(chunk[index : index + 2], byteorder="little", signed=True)
+        abs_sample = 32767 if sample == -32768 else abs(sample)
+        if abs_sample > peak:
+            peak = abs_sample
+            if peak > threshold:
+                return False
+    return True
 
 
 class HallidaySession:
@@ -481,7 +591,7 @@ async def serve(cfg: ServerConfig) -> None:
             cfg.openai_transcription_model,
         )
     if cfg.stt_backend == "whisplay":
-        LOGGER.info("Whisplay backend enabled with websocket %s", cfg.whisplay_url)
+        LOGGER.info("Whisplay backend enabled with recognize URL %s", cfg.whisplay_recognize_url)
 
     async def on_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         session = HallidaySession(reader, writer, cfg, vosk_model)
@@ -508,7 +618,7 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--openai-vad-threshold", type=float, default=0.5)
     parser.add_argument("--openai-vad-prefix-padding-ms", type=int, default=300)
     parser.add_argument("--openai-vad-silence-duration-ms", type=int, default=500)
-    parser.add_argument("--whisplay-url", default="ws://192.168.2.29:8090/asr/live")
+    parser.add_argument("--whisplay-recognize-url", default="http://192.168.2.29:8801/recognize")
     args = parser.parse_args()
 
     return ServerConfig(
@@ -524,7 +634,7 @@ def parse_args() -> ServerConfig:
         openai_vad_threshold=args.openai_vad_threshold,
         openai_vad_prefix_padding_ms=args.openai_vad_prefix_padding_ms,
         openai_vad_silence_duration_ms=args.openai_vad_silence_duration_ms,
-        whisplay_url=args.whisplay_url,
+        whisplay_recognize_url=args.whisplay_recognize_url,
     )
 
 
