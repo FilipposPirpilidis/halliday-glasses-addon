@@ -54,6 +54,115 @@ If `translate_url` stays on `127.0.0.1`, the add-on starts LibreTranslate inside
 For the LM8850 prebuilt image, see:
 [PiSugar Whisplay AI Chatbot Prebuild Image - LLM8850](https://github.com/PiSugar/whisplay-ai-chatbot/wiki/Prebuild-Image-%E2%80%90-LLM8850)
 
+## Client Protocol
+
+This add-on does not expose a WebSocket endpoint. Clients connect with raw Wyoming TCP to `server_host:server_port`, usually `10310`.
+
+Each message is:
+
+1. one JSON header line ending with `\n`
+2. optional binary payload if `payload_length` is present
+
+Header example:
+
+```json
+{"type":"audio-chunk","data":{"rate":16000,"width":2,"channels":1},"payload_length":3200}
+```
+
+### Client -> Add-on
+
+Send these events:
+
+- `describe`
+  Requests add-on info and current translation config.
+- `transcribe`
+  Optional language hint.
+- `audio-start`
+  Starts a streaming session.
+- `audio-chunk`
+  Sends PCM16 mono audio bytes.
+- `audio-stop`
+  Ends the current utterance or stream.
+- `translate-get`
+  Requests current runtime translation settings.
+- `translate-set`
+  Updates runtime translation settings without reopening Home Assistant config.
+- `ping`
+  Health check.
+
+Example `transcribe`:
+
+```json
+{"type":"transcribe","data":{"language":"en"}}
+```
+
+Example `audio-start`:
+
+```json
+{"type":"audio-start","data":{"rate":16000,"width":2,"channels":1}}
+```
+
+Example `audio-chunk` header:
+
+```json
+{"type":"audio-chunk","data":{"rate":16000,"width":2,"channels":1},"payload_length":3200}
+```
+
+The bytes immediately after that header must be raw PCM16 mono audio.
+
+Example `translate-set`:
+
+```json
+{"type":"translate-set","data":{"enabled":true,"source":"en","target":"el"}}
+```
+
+or:
+
+```json
+{"type":"translate-set","data":{"enabled":true,"pair":"en-el"}}
+```
+
+### Add-on -> Client
+
+The add-on sends these events back:
+
+- `info`
+  Response to `describe`, including backend info and translation config.
+- `transcript-chunk`
+  Partial live caption text.
+- `transcript`
+  Final caption text.
+- `translate-config`
+  Current runtime translation settings.
+- `pong`
+  Response to `ping`.
+- `error`
+  Error message.
+
+Example `transcript-chunk`:
+
+```json
+{"type":"transcript-chunk","data":{"text":"hello wor"}}
+```
+
+Example final `transcript` without translation:
+
+```json
+{"type":"transcript","data":{"text":"hello world"}}
+```
+
+Example final `transcript` with translation enabled:
+
+```json
+{"type":"transcript","data":{"text":"γειά σου κόσμε","original_text":"hello world","translated":true,"source_language":"en","target_language":"el"}}
+```
+
+Example `translate-config`:
+
+```json
+{"type":"translate-config","data":{"enabled":true,"pairs":["en-el","el-en"],"pair":"en-el","source":"en","target":"el"}}
+```
+
 ## Notes
 
 - The add-on expects PCM16 mono input.
