@@ -157,6 +157,7 @@ class OpenAIRealtimeBackend:
         session_update = {
             "type": "session.update",
             "session": {
+                "type": "realtime",
                 "audio": {
                     "input": {
                         "format": {
