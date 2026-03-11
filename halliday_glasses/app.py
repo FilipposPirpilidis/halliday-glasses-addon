@@ -686,6 +686,8 @@ class HallidaySession:
         text = text.strip()
         if not text:
             return
+        if should_drop_final_text(text):
+            return
 
         if not self.state.translate_enabled or not self.state.translate_target:
             await self.send_event("transcript", {"text": text})
@@ -847,6 +849,32 @@ def parse_translation_pairs(raw_value: str) -> tuple[str, ...]:
         if source and target:
             pairs.append(f"{source}-{target}")
     return tuple(dict.fromkeys(pairs))
+
+
+def should_drop_final_text(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return True
+
+    ignored_values = {
+        "[blank_audio]",
+        "blank_audio",
+        "(blank_audio)",
+        "[noise]",
+        "(noise)",
+        "[silence]",
+        "(silence)",
+        "[music]",
+        "(music)",
+        "[applause]",
+        "(applause)",
+        "[laughter]",
+        "(laughter)",
+        "[static]",
+        "(static)",
+        "static",
+    }
+    return normalized in ignored_values
 
 
 async def serve(cfg: ServerConfig) -> None:
