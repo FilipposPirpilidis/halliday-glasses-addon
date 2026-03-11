@@ -823,7 +823,7 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--whisplay-auto-final-min-seconds", type=float, default=0.8)
     parser.add_argument("--whisplay-auto-final-silence-level", type=int, default=700)
     parser.add_argument("--translate-enabled", action="store_true")
-    parser.add_argument("--translate-url", default="http://homeassistant.local:5000/translate")
+    parser.add_argument("--translate-url", default="http://127.0.0.1:5000/translate")
     parser.add_argument("--translate-pairs", default='["en-el","el-en","en-de","de-en","en-fr","fr-en"]')
     parser.add_argument("--translate-source", default="auto")
     parser.add_argument("--translate-target", default="")

@@ -35,7 +35,7 @@ options:
   whisplaybot_auto_final_min_seconds: 1
   whisplaybot_auto_final_silence_level: 700
   translate_enabled: false
-  translate_url: "http://homeassistant.local:5000/translate"
+  translate_url: "http://127.0.0.1:5000/translate"
   translate_pairs:
     - "en-el"
     - "el-en"

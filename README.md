@@ -20,13 +20,14 @@ Set `stt_backend` to exactly one of these:
 ## Translation Options
 
 - `translate_enabled`: enable final-text translation after STT
-- `translate_url`: LibreTranslate `/translate` endpoint
+- `translate_url`: LibreTranslate `/translate` endpoint, default `http://127.0.0.1:5000/translate`
 - `translate_pairs`: allowed source-target pairs such as `en-el` and `el-en`
 - `translate_source`: default source language
 - `translate_target`: default target language
 - `translate_timeout_seconds`: HTTP timeout for translation requests
 
 When translation is enabled, the add-on keeps sending the final result as a normal Wyoming `transcript` event, but `text` becomes the translated string. The original STT text is included as `original_text`.
+If `translate_url` stays on `127.0.0.1`, the add-on starts LibreTranslate inside the same container and installs the configured `translate_pairs` models into `/data`.
 
 ## Vosk Options
 

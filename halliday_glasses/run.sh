@@ -24,6 +24,8 @@ TRANSLATE_PAIRS="$(bashio::config 'translate_pairs')"
 TRANSLATE_SOURCE="$(bashio::config 'translate_source')"
 TRANSLATE_TARGET="$(bashio::config 'translate_target')"
 TRANSLATE_TIMEOUT_SECONDS="$(bashio::config 'translate_timeout_seconds')"
+LIBRETRANSLATE_HOST="127.0.0.1"
+LIBRETRANSLATE_PORT="5000"
 
 case "${MODEL_VARIANT}" in
   "0.15")
@@ -64,6 +66,95 @@ TRANSLATE_ARGS=(
 
 if bashio::var.true "${TRANSLATE_ENABLED}"; then
   TRANSLATE_ARGS+=(--translate-enabled)
+fi
+
+cleanup() {
+  if [ -n "${LIBRETRANSLATE_PID:-}" ]; then
+    kill "${LIBRETRANSLATE_PID}" 2>/dev/null || true
+  fi
+}
+
+start_internal_libretranslate() {
+  export XDG_DATA_HOME=/data
+  mkdir -p /data/argos-translate
+
+  python3 - <<'PY'
+import json
+import os
+import re
+
+import argostranslate.package as package
+
+DEFAULT_PAIRS = ["en-el", "el-en", "en-de", "de-en", "en-fr", "fr-en"]
+PAIR_RE = re.compile(r"^[a-z]{2,3}-[a-z]{2,3}$")
+configured_pairs = []
+options_path = "/data/options.json"
+if os.path.exists(options_path):
+    with open(options_path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    raw_pairs = data.get("translate_pairs")
+    if isinstance(raw_pairs, list):
+        configured_pairs = raw_pairs
+
+pairs = []
+for pair in configured_pairs:
+    if not isinstance(pair, str):
+        continue
+    normalized = pair.strip().lower().replace("_", "-")
+    if PAIR_RE.match(normalized):
+        pairs.append(normalized)
+
+if not pairs:
+    pairs = DEFAULT_PAIRS
+
+seen = set()
+pairs = [pair for pair in pairs if not (pair in seen or seen.add(pair))]
+print(f"[halliday_glasses] LibreTranslate requested pairs: {pairs}")
+
+installed = {(pkg.from_code, pkg.to_code) for pkg in package.get_installed_packages()}
+missing = []
+for pair in pairs:
+    src, dst = pair.split("-")
+    if (src, dst) not in installed:
+        missing.append((src, dst))
+
+if missing:
+    print(f"[halliday_glasses] LibreTranslate missing models: {missing}")
+    package.update_package_index()
+    available = {(pkg.from_code, pkg.to_code): pkg for pkg in package.get_available_packages()}
+    for src, dst in missing:
+        selected = available.get((src, dst))
+        if selected is None:
+            print(f"[halliday_glasses] LibreTranslate model not found: {src}->{dst}")
+            continue
+        print(f"[halliday_glasses] Installing LibreTranslate model: {src}->{dst}")
+        package.install_from_path(selected.download())
+else:
+    print("[halliday_glasses] LibreTranslate models already installed")
+PY
+
+  bashio::log.info "Starting internal LibreTranslate on ${LIBRETRANSLATE_HOST}:${LIBRETRANSLATE_PORT}"
+  libretranslate --host "${LIBRETRANSLATE_HOST}" --port "${LIBRETRANSLATE_PORT}" &
+  LIBRETRANSLATE_PID=$!
+  trap cleanup EXIT INT TERM
+
+  for _ in $(seq 1 60); do
+    if curl --silent --fail "http://${LIBRETRANSLATE_HOST}:${LIBRETRANSLATE_PORT}/languages" >/dev/null 2>&1; then
+      bashio::log.info "Internal LibreTranslate is ready"
+      return
+    fi
+    sleep 1
+  done
+
+  bashio::log.warning "Internal LibreTranslate did not become ready before timeout"
+}
+
+if bashio::var.true "${TRANSLATE_ENABLED}"; then
+  if [ "${TRANSLATE_URL}" = "http://127.0.0.1:5000/translate" ] || [ "${TRANSLATE_URL}" = "http://localhost:5000/translate" ]; then
+    start_internal_libretranslate
+  else
+    bashio::log.info "Using external translation endpoint ${TRANSLATE_URL}"
+  fi
 fi
 
 if [ "${STT_BACKEND}" = "openai" ]; then
