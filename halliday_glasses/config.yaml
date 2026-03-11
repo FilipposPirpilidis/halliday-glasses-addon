@@ -2,7 +2,7 @@ name: "Halliday Glasses"
 version: "1.0.0"
 slug: "halliday_glasses"
 description: "Local Vosk-powered Wyoming add-on for Halliday Glasses live transcription over PCM16 mono audio streams."
-url: "https://example.com/local-only"
+url: "https://github.com/FilipposPirpilidis/halliday-glasses-addon"
 arch:
   - amd64
   - aarch64
