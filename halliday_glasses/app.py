@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import websockets
 from websockets.exceptions import ConnectionClosed
+from opuslib import Decoder as OpusDecoder
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
 
@@ -68,6 +69,7 @@ class ServerConfig:
     listen_port: int
     websocket_host: str
     websocket_port: int
+    accepted_audio_codecs: tuple[str, ...]
     language: str
     model_path: str
     stt_backend: str
@@ -98,6 +100,7 @@ class AudioState:
     rate: int = 16000
     width: int = 2
     channels: int = 1
+    codec: str = "pcm16"
     language: str = "en"
     chunks: bytearray | None = None
     translate_enabled: bool = False
@@ -145,6 +148,43 @@ class Translator:
             raise RuntimeError(f"LibreTranslate HTTP {err.code}: {body}") from err
         except URLError as err:
             raise RuntimeError(f"LibreTranslate request failed: {err}") from err
+
+
+class AudioDecoder:
+    async def start(self, state: AudioState) -> None:
+        return
+
+    async def decode(self, payload: bytes) -> bytes:
+        return payload
+
+
+class PCM16Decoder(AudioDecoder):
+    async def start(self, state: AudioState) -> None:
+        if state.width != 2 or state.channels != 1:
+            raise RuntimeError("PCM16 mode expects 16-bit mono audio")
+
+
+class OpusPacketDecoder(AudioDecoder):
+    def __init__(self) -> None:
+        self.decoder: Optional[OpusDecoder] = None
+        self.frame_size = 960
+
+    async def start(self, state: AudioState) -> None:
+        if state.channels != 1:
+            raise RuntimeError("Opus mode currently supports mono audio only")
+        if state.rate != 16000:
+            raise RuntimeError("Opus mode currently supports 16000 Hz audio only")
+        self.decoder = OpusDecoder(state.rate, state.channels)
+
+    async def decode(self, payload: bytes) -> bytes:
+        if not payload:
+            return b""
+        if self.decoder is None:
+            raise RuntimeError("Opus decoder is not initialized")
+        try:
+            return self.decoder.decode(payload, self.frame_size)
+        except Exception as err:
+            raise RuntimeError(f"Opus decode failed: {err}") from err
 
 
 class VoskBackend:
@@ -546,6 +586,7 @@ class HallidaySession:
         self.state.translate_target = normalize_language_code(cfg.translate_target)
         self._closed = False
         self.backend = None
+        self.decoder: AudioDecoder = PCM16Decoder()
 
     async def run(self) -> None:
         peer = self.writer.get_extra_info("peername")
@@ -635,13 +676,20 @@ class HallidaySession:
             self.state.rate = int(data.get("rate") or 16000)
             self.state.width = int(data.get("width") or 2)
             self.state.channels = int(data.get("channels") or 1)
+            self.state.codec = normalize_codec_name((data.get("codec") or "pcm16").strip())
+            if self.cfg.accepted_audio_codecs and self.state.codec not in self.cfg.accepted_audio_codecs:
+                raise RuntimeError(f"Unsupported audio codec '{self.state.codec}'")
+            self.decoder = build_audio_decoder(self.state.codec)
+            await self.decoder.start(self.state)
             self.backend = self.build_backend()
             await self.backend.start(self.state)
             return
 
         if event_type == "audio-chunk":
             if self.backend is not None:
-                await self.backend.process_chunk(payload, self.state)
+                decoded_payload = await self.decoder.decode(payload)
+                if decoded_payload:
+                    await self.backend.process_chunk(decoded_payload, self.state)
             return
 
         if event_type == "audio-stop":
@@ -851,6 +899,49 @@ def parse_translation_pairs(raw_value: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(pairs))
 
 
+def normalize_codec_name(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return "pcm16"
+    aliases = {
+        "pcm": "pcm16",
+        "s16le": "pcm16",
+        "audio/pcm": "pcm16",
+        "opus": "opus",
+        "audio/opus": "opus",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def parse_audio_codecs(raw_value: str) -> tuple[str, ...]:
+    raw_value = (raw_value or "").strip()
+    if not raw_value:
+        return ("pcm16",)
+
+    values: list[str]
+    if raw_value.startswith("["):
+        try:
+            decoded = json.loads(raw_value)
+        except json.JSONDecodeError:
+            decoded = []
+        values = [str(item).strip() for item in decoded if str(item).strip()]
+    else:
+        values = [item.strip() for item in raw_value.split(",") if item.strip()]
+
+    codecs: list[str] = []
+    for value in values:
+        normalized = normalize_codec_name(value)
+        if normalized:
+            codecs.append(normalized)
+    return tuple(dict.fromkeys(codecs or ["pcm16"]))
+
+
+def build_audio_decoder(codec: str) -> AudioDecoder:
+    if codec == "opus":
+        return OpusPacketDecoder()
+    return PCM16Decoder()
+
+
 def should_drop_final_text(text: str) -> bool:
     normalized = (text or "").strip().lower()
     if not normalized:
@@ -927,6 +1018,7 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--listen-port", type=int, default=10310)
     parser.add_argument("--websocket-host", default="0.0.0.0")
     parser.add_argument("--websocket-port", type=int, default=8099)
+    parser.add_argument("--accepted-audio-codecs", default='["pcm16","opus"]')
     parser.add_argument("--language", default="en")
     parser.add_argument("--model-path", default="/models/vosk-model-small-en-us-0.15")
     parser.add_argument("--stt-backend", default="vosk")
@@ -951,6 +1043,7 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--translate-target", default="")
     parser.add_argument("--translate-timeout-seconds", type=float, default=30.0)
     args = parser.parse_args()
+    accepted_audio_codecs = parse_audio_codecs(args.accepted_audio_codecs)
     translate_pairs = parse_translation_pairs(args.translate_pairs)
     translate_source = normalize_language_code(args.translate_source)
     translate_target = normalize_language_code(args.translate_target)
@@ -966,6 +1059,7 @@ def parse_args() -> ServerConfig:
         listen_port=args.listen_port,
         websocket_host=args.websocket_host,
         websocket_port=args.websocket_port,
+        accepted_audio_codecs=accepted_audio_codecs,
         language=args.language,
         model_path=args.model_path,
         stt_backend=args.stt_backend,

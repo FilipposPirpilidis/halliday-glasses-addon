@@ -10,11 +10,13 @@ RUN apt-get update \
         ca-certificates \
         curl \
         libatomic1 \
+        libopus0 \
         python3 \
         python3-pip \
         unzip \
     && python3 -m pip install --no-cache-dir --break-system-packages \
         libretranslate==1.6.1 \
+        opuslib==3.0.1 \
         vosk==0.3.45 \
         websockets==12.0 \
     && mkdir -p /models \

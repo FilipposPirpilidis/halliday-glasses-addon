@@ -14,6 +14,7 @@ Set `stt_backend` to exactly one of these:
 
 - `server_host`: bind address, default `0.0.0.0`
 - `server_port`: internal Wyoming bridge port, default `10310`
+- `accepted_audio_codecs`: supported client codecs, default `pcm16` and `opus`
 - `language`: language hint, default `en`
 - `stt_backend`: `vosk`, `openai`, or `whisplaybot`
 
@@ -149,6 +150,14 @@ Example `open_stream`:
 ```json
 {"id":1,"type":"halliday_glasses_bridge/open_stream","language":"en","rate":16000,"width":2,"channels":1}
 ```
+
+To use Opus instead of PCM16, declare the codec in `open_stream`:
+
+```json
+{"id":1,"type":"halliday_glasses_bridge/open_stream","language":"en","codec":"opus","rate":16000,"width":2,"channels":1}
+```
+
+In Opus mode, each `audio_chunk.audio` value must contain one base64-encoded Opus packet. The add-on decodes it to PCM16 mono 16 kHz before transcription.
 
 Example success result:
 

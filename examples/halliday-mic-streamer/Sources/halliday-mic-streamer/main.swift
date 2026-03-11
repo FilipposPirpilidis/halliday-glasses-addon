@@ -16,6 +16,7 @@ struct CLIOptions {
     var scheme: String = "ws"
     var host: String = "homeassistant.local"
     var port: Int = 8123
+    var codec: String = "pcm16"
     var language: String = "en"
     var haToken: String? = ProcessInfo.processInfo.environment["HA_TOKEN"]
     var translateEnabled: Bool?
@@ -37,6 +38,10 @@ struct CLIOptions {
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--host") }
                 options.host = args[index]
+            case "--codec":
+                index += 1
+                guard index < args.count else { throw CLIError.missingValue("--codec") }
+                options.codec = args[index]
             case "--port":
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--port") }
@@ -118,6 +123,7 @@ enum AppError: Error, CustomStringConvertible {
     case authRequired
     case authenticationFailed
     case missingSessionID
+    case unsupportedCodec(String)
 
     var description: String {
         switch self {
@@ -149,6 +155,8 @@ enum AppError: Error, CustomStringConvertible {
             return "Home Assistant authentication was rejected"
         case .missingSessionID:
             return "Home Assistant did not return a session_id"
+        case let .unsupportedCodec(codec):
+            return "The Swift mic streamer currently captures PCM16 only. Unsupported codec: \(codec)"
         }
     }
 }
@@ -480,6 +488,7 @@ final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate,
     private let scheme: String
     private let host: String
     private let port: Int
+    private let codec: String
     private let haToken: String
     private let language: String
     private let cfg: AudioConfig
@@ -493,10 +502,11 @@ final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate,
     private var sessionID: String?
     private var pendingResults: [Int: PendingResult] = [:]
 
-    init(scheme: String, host: String, port: Int, haToken: String, language: String, cfg: AudioConfig) {
+    init(scheme: String, host: String, port: Int, codec: String, haToken: String, language: String, cfg: AudioConfig) {
         self.scheme = scheme
         self.host = host
         self.port = port
+        self.codec = codec
         self.haToken = haToken
         self.language = language
         self.cfg = cfg
@@ -525,6 +535,7 @@ final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate,
             type: "halliday_glasses_bridge/open_stream",
             payload: [
                 "language": language,
+                "codec": codec,
                 "rate": Int(cfg.rate),
                 "width": cfg.width,
                 "channels": Int(cfg.channels)
@@ -861,7 +872,7 @@ func requestMicrophonePermission() -> Bool {
 }
 
 func printUsageAndExit() -> Never {
-    print("Usage: halliday-mic-streamer [--scheme ws|wss] [--host HOST] [--port PORT] --ha-token TOKEN [--language LANG] [--translate-enabled true|false] [--translate-source LANG] [--translate-target LANG]")
+    print("Usage: halliday-mic-streamer [--scheme ws|wss] [--host HOST] [--port PORT] [--codec pcm16|opus] --ha-token TOKEN [--language LANG] [--translate-enabled true|false] [--translate-source LANG] [--translate-target LANG]")
     print("  Default target: ws://homeassistant.local:8123/api/websocket")
     exit(0)
 }
@@ -871,6 +882,9 @@ struct HallidayMicStreamer {
     static func main() {
         do {
             let options = try CLIOptions.parse(from: Array(CommandLine.arguments.dropFirst()))
+            if options.codec.lowercased() != "pcm16" {
+                throw AppError.unsupportedCodec(options.codec)
+            }
 
             guard requestMicrophonePermission() else {
                 throw AppError.microphoneAccessDenied
@@ -885,6 +899,7 @@ struct HallidayMicStreamer {
             print("Live streaming ready.")
             print("Streaming microphone audio continuously. Press ESC to quit.")
             print("Target: \(options.scheme)://\(options.host):\(options.port)")
+            print("Audio codec: \(options.codec)")
             if let translateEnabled = options.translateEnabled {
                 print("Requested translation: \(translateEnabled ? "enabled" : "disabled")")
             }
@@ -896,6 +911,7 @@ struct HallidayMicStreamer {
                 scheme: options.scheme,
                 host: options.host,
                 port: options.port,
+                codec: options.codec,
                 haToken: options.haToken ?? "",
                 language: options.language,
                 cfg: cfg

@@ -91,10 +91,10 @@ class HallidayBridgeSession:
         self.read_task: asyncio.Task | None = None
         self.closed = False
 
-    async def connect(self, language: str, rate: int, width: int, channels: int) -> None:
+    async def connect(self, language: str, codec: str, rate: int, width: int, channels: int) -> None:
         self.reader, self.writer = await asyncio.open_connection(self.upstream.host, self.upstream.port)
         await self.send("transcribe", {"language": language})
-        await self.send("audio-start", {"rate": rate, "width": width, "channels": channels})
+        await self.send("audio-start", {"codec": codec, "rate": rate, "width": width, "channels": channels})
         self.read_task = self.hass.loop.create_task(self.read_loop())
 
     async def read_loop(self) -> None:
@@ -217,6 +217,7 @@ def _register_commands(hass: HomeAssistant) -> None:
         vol.Required("id"): int,
         vol.Required("type"): f"{DOMAIN}/open_stream",
         vol.Optional("language", default="en"): str,
+        vol.Optional("codec", default="pcm16"): str,
         vol.Optional("rate", default=16000): int,
         vol.Optional("width", default=2): int,
         vol.Optional("channels", default=1): int,
@@ -229,7 +230,7 @@ def _register_commands(hass: HomeAssistant) -> None:
 async def websocket_open_stream(hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]) -> None:
     upstream = get_upstream_config(hass)
     session = HallidayBridgeSession(hass, connection, msg["id"], upstream)
-    await session.connect(msg["language"], msg["rate"], msg["width"], msg["channels"])
+    await session.connect(msg["language"], msg.get("codec", "pcm16"), msg["rate"], msg["width"], msg["channels"])
     sessions: dict[str, HallidayBridgeSession] = hass.data[DOMAIN][DATA_SESSIONS]
     session_id = f"{id(connection)}:{msg['id']}"
     sessions[session_id] = session

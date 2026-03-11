@@ -5,6 +5,7 @@ SERVER_HOST="$(bashio::config 'server_host')"
 SERVER_PORT="$(bashio::config 'server_port')"
 WEBSOCKET_HOST="0.0.0.0"
 WEBSOCKET_PORT="8099"
+ACCEPTED_AUDIO_CODECS="$(bashio::config 'accepted_audio_codecs')"
 LANGUAGE="$(bashio::config 'language')"
 STT_BACKEND="$(bashio::config 'stt_backend')"
 MODEL_VARIANT="$(bashio::config 'model_variant')"
@@ -51,6 +52,7 @@ fi
 bashio::log.info "Starting Halliday Glasses add-on"
 bashio::log.info "Listening on ${SERVER_HOST}:${SERVER_PORT}"
 bashio::log.info "WebSocket ingress bridge on ${WEBSOCKET_HOST}:${WEBSOCKET_PORT}/ws"
+bashio::log.info "Accepted audio codecs ${ACCEPTED_AUDIO_CODECS}"
 bashio::log.info "Using STT backend ${STT_BACKEND}"
 if bashio::var.true "${TRANSLATE_ENABLED}"; then
   bashio::log.info "Translation enabled via ${TRANSLATE_URL}"
@@ -169,6 +171,7 @@ if [ "${STT_BACKEND}" = "openai" ]; then
     --listen-port "${SERVER_PORT}" \
     --websocket-host "${WEBSOCKET_HOST}" \
     --websocket-port "${WEBSOCKET_PORT}" \
+    --accepted-audio-codecs "${ACCEPTED_AUDIO_CODECS}" \
     --language "${LANGUAGE}" \
     --stt-backend "${STT_BACKEND}" \
     --model-path "${RESOLVED_MODEL_PATH}" \
@@ -185,6 +188,7 @@ elif [ "${STT_BACKEND}" = "whisplaybot" ]; then
     --listen-port "${SERVER_PORT}" \
     --websocket-host "${WEBSOCKET_HOST}" \
     --websocket-port "${WEBSOCKET_PORT}" \
+    --accepted-audio-codecs "${ACCEPTED_AUDIO_CODECS}" \
     --language "${LANGUAGE}" \
     --stt-backend "${STT_BACKEND}" \
     --model-path "${RESOLVED_MODEL_PATH}" \
@@ -205,6 +209,7 @@ else
     --listen-port "${SERVER_PORT}" \
     --websocket-host "${WEBSOCKET_HOST}" \
     --websocket-port "${WEBSOCKET_PORT}" \
+    --accepted-audio-codecs "${ACCEPTED_AUDIO_CODECS}" \
     --language "${LANGUAGE}" \
     --stt-backend "vosk" \
     --model-path "${RESOLVED_MODEL_PATH}" \

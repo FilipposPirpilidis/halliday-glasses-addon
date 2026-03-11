@@ -29,6 +29,7 @@ swift run halliday-mic-streamer \
 Optional flags:
 
 - `--scheme ws`
+- `--codec pcm16`
 - `--language en`
 - `--ha-token <token>` or `HA_TOKEN=...`
 - `--translate-enabled true`
@@ -53,3 +54,4 @@ swift run halliday-mic-streamer \
 - The first run needs microphone permission.
 - The terminal or app may need macOS Accessibility permission so the global ESC key monitor works.
 - Home Assistant must have the `halliday_glasses_bridge` custom integration installed and configured.
+- The bundled Swift mic streamer currently captures PCM16 only. The add-on can accept Opus-capable clients separately.
