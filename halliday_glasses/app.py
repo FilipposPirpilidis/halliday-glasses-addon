@@ -677,64 +677,6 @@ class HallidaySession:
             self._closed = True
             raise
 
-
-class WebSocketSession(HallidaySession):
-    def __init__(self, websocket, cfg: ServerConfig, vosk_model: Optional[Model], translator: Translator):
-        self.websocket = websocket
-        super().__init__(None, None, cfg, vosk_model, translator)
-
-    async def run(self) -> None:
-        peer = getattr(self.websocket, "remote_address", None)
-        LOGGER.info("WebSocket client connected: %s", peer)
-        try:
-            async for message in self.websocket:
-                event, payload = decode_websocket_event(message)
-                await self.handle_event(event, payload)
-        except ConnectionClosed:
-            LOGGER.info("WebSocket client disconnected: %s", peer)
-        except Exception:
-            LOGGER.exception("WebSocket session failure for %s", peer)
-        finally:
-            await self.close_backend()
-            try:
-                await self.websocket.close()
-            except Exception:
-                pass
-
-    async def send_event(self, event_type: str, data: Optional[dict[str, Any]] = None, payload: bytes = b"") -> None:
-        event: dict[str, Any] = {"type": event_type}
-        if data:
-            event["data"] = data
-        if payload:
-            event["payload"] = base64.b64encode(payload).decode("ascii")
-        try:
-            await self.websocket.send(json.dumps(event, separators=(",", ":")))
-        except ConnectionClosed:
-            self._closed = True
-            raise
-
-
-def decode_websocket_event(message: Any) -> tuple[dict[str, Any], bytes]:
-    if isinstance(message, bytes):
-        raise ValueError("Binary websocket messages are not supported; send JSON text frames")
-
-    event = json.loads(message)
-    if not isinstance(event, dict):
-        raise ValueError("WebSocket event must be a JSON object")
-
-    data = event.get("data") or {}
-    if not isinstance(data, dict):
-        data = {}
-
-    payload = b""
-    audio_b64 = (event.get("audio") or "").strip()
-    payload_b64 = (event.get("payload") or "").strip()
-    encoded = audio_b64 or payload_b64
-    if encoded:
-        payload = base64.b64decode(encoded)
-
-    return {"type": event.get("type"), "data": data}, payload
-
     async def emit_partial_text(self, text: str) -> None:
         text = text.strip()
         if text:
@@ -805,6 +747,64 @@ def decode_websocket_event(message: Any) -> tuple[dict[str, Any], bytes]:
         if current_pair in self.state.translate_pairs:
             return
         self.state.translate_pairs = tuple([*self.state.translate_pairs, current_pair])
+
+
+class WebSocketSession(HallidaySession):
+    def __init__(self, websocket, cfg: ServerConfig, vosk_model: Optional[Model], translator: Translator):
+        self.websocket = websocket
+        super().__init__(None, None, cfg, vosk_model, translator)
+
+    async def run(self) -> None:
+        peer = getattr(self.websocket, "remote_address", None)
+        LOGGER.info("WebSocket client connected: %s", peer)
+        try:
+            async for message in self.websocket:
+                event, payload = decode_websocket_event(message)
+                await self.handle_event(event, payload)
+        except ConnectionClosed:
+            LOGGER.info("WebSocket client disconnected: %s", peer)
+        except Exception:
+            LOGGER.exception("WebSocket session failure for %s", peer)
+        finally:
+            await self.close_backend()
+            try:
+                await self.websocket.close()
+            except Exception:
+                pass
+
+    async def send_event(self, event_type: str, data: Optional[dict[str, Any]] = None, payload: bytes = b"") -> None:
+        event: dict[str, Any] = {"type": event_type}
+        if data:
+            event["data"] = data
+        if payload:
+            event["payload"] = base64.b64encode(payload).decode("ascii")
+        try:
+            await self.websocket.send(json.dumps(event, separators=(",", ":")))
+        except ConnectionClosed:
+            self._closed = True
+            raise
+
+
+def decode_websocket_event(message: Any) -> tuple[dict[str, Any], bytes]:
+    if isinstance(message, bytes):
+        raise ValueError("Binary websocket messages are not supported; send JSON text frames")
+
+    event = json.loads(message)
+    if not isinstance(event, dict):
+        raise ValueError("WebSocket event must be a JSON object")
+
+    data = event.get("data") or {}
+    if not isinstance(data, dict):
+        data = {}
+
+    payload = b""
+    audio_b64 = (event.get("audio") or "").strip()
+    payload_b64 = (event.get("payload") or "").strip()
+    encoded = audio_b64 or payload_b64
+    if encoded:
+        payload = base64.b64decode(encoded)
+
+    return {"type": event.get("type"), "data": data}, payload
 
 
 def split_translation_pair(pair: str) -> tuple[str, str]:
