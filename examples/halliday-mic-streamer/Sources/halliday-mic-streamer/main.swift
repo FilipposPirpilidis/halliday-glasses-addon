@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import AudioToolbox
 import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
@@ -8,8 +9,15 @@ struct AudioConfig {
     let channels: AVAudioChannelCount
     let blockSize: AVAudioFrameCount
     let width: Int
+    let codec: String
 
-    static let `default` = AudioConfig(rate: 16_000, channels: 1, blockSize: 1_024, width: 2)
+    static func make(codec: String) -> AudioConfig {
+        let normalized = codec.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "opus" {
+            return AudioConfig(rate: 16_000, channels: 1, blockSize: 960, width: 2, codec: "opus")
+        }
+        return AudioConfig(rate: 16_000, channels: 1, blockSize: 1_024, width: 2, codec: "pcm16")
+    }
 }
 
 struct CLIOptions {
@@ -123,7 +131,6 @@ enum AppError: Error, CustomStringConvertible {
     case authRequired
     case authenticationFailed
     case missingSessionID
-    case unsupportedCodec(String)
 
     var description: String {
         switch self {
@@ -155,8 +162,6 @@ enum AppError: Error, CustomStringConvertible {
             return "Home Assistant authentication was rejected"
         case .missingSessionID:
             return "Home Assistant did not return a session_id"
-        case let .unsupportedCodec(codec):
-            return "The Swift mic streamer currently captures PCM16 only. Unsupported codec: \(codec)"
         }
     }
 }
@@ -173,6 +178,98 @@ final class ConverterInputState: @unchecked Sendable {
     var supplied = false
 }
 
+final class OpusPacketEncoder {
+    private let pcmFormat: AVAudioFormat
+    private let converter: AVAudioConverter
+    private let frameSize: AVAudioFrameCount = 320
+    private let bytesPerFrame = 2
+    private var pendingPCM = Data()
+
+    init(pcmFormat: AVAudioFormat) throws {
+        self.pcmFormat = pcmFormat
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatOpus,
+            AVSampleRateKey: pcmFormat.sampleRate,
+            AVNumberOfChannelsKey: Int(pcmFormat.channelCount)
+        ]
+        guard let opusFormat = AVAudioFormat(settings: settings) else {
+            throw AppError.failedToCreateAudioFormat
+        }
+        guard let converter = AVAudioConverter(from: pcmFormat, to: opusFormat) else {
+            throw AppError.failedToCreateConverter
+        }
+        converter.bitRate = 16_000
+        self.converter = converter
+    }
+
+    func encodePCM(_ data: Data) throws -> [Data] {
+        pendingPCM.append(data)
+        var packets: [Data] = []
+        let chunkByteCount = Int(frameSize) * bytesPerFrame
+        while pendingPCM.count >= chunkByteCount {
+            let chunk = pendingPCM.prefix(chunkByteCount)
+            pendingPCM.removeFirst(chunkByteCount)
+            if let packet = try encodeChunk(Data(chunk)) {
+                packets.append(packet)
+            }
+        }
+        return packets
+    }
+
+    func flush() throws -> [Data] {
+        guard !pendingPCM.isEmpty else {
+            return []
+        }
+        let chunkByteCount = Int(frameSize) * bytesPerFrame
+        if pendingPCM.count < chunkByteCount {
+            pendingPCM.append(Data(count: chunkByteCount - pendingPCM.count))
+        }
+        let chunk = pendingPCM
+        pendingPCM.removeAll(keepingCapacity: false)
+        if let packet = try encodeChunk(chunk) {
+            return [packet]
+        }
+        return []
+    }
+
+    private func encodeChunk(_ pcm: Data) throws -> Data? {
+        guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: frameSize),
+              let channelData = pcmBuffer.int16ChannelData?.pointee else {
+            throw AppError.failedToCreateAudioFormat
+        }
+
+        pcm.copyBytes(to: UnsafeMutableRawBufferPointer(start: channelData, count: pcm.count))
+        pcmBuffer.frameLength = frameSize
+
+        let maxPacketSize = max(converter.maximumOutputPacketSize, 512)
+        let compressed = AVAudioCompressedBuffer(
+            format: converter.outputFormat,
+            packetCapacity: 1,
+            maximumPacketSize: maxPacketSize
+        )
+
+        let inputState = ConverterInputState()
+        var conversionError: NSError?
+        let status = converter.convert(to: compressed, error: &conversionError) { _, outStatus in
+            if inputState.supplied {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            inputState.supplied = true
+            outStatus.pointee = .haveData
+            return pcmBuffer
+        }
+
+        if status == .error || conversionError != nil {
+            throw conversionError ?? AppError.failedToCreateConverter
+        }
+        guard compressed.byteLength > 0 else {
+            return nil
+        }
+        return Data(bytes: compressed.data, count: Int(compressed.byteLength))
+    }
+}
+
 final class PushToTalkRecorder {
     private let cfg: AudioConfig
     private let engine = AVAudioEngine()
@@ -180,6 +277,7 @@ final class PushToTalkRecorder {
     private let targetFormat: AVAudioFormat
     private let converter: AVAudioConverter
     private let stateQueue = DispatchQueue(label: "halliday.recorder.state")
+    private let opusEncoder: OpusPacketEncoder?
 
     private var recording = false
     private var recordedBytes = 0
@@ -203,6 +301,7 @@ final class PushToTalkRecorder {
             throw AppError.failedToCreateConverter
         }
         self.converter = converter
+        self.opusEncoder = cfg.codec == "opus" ? try OpusPacketEncoder(pcmFormat: targetFormat) : nil
 
         engine.inputNode.installTap(onBus: 0, bufferSize: cfg.blockSize, format: inputFormat) { [weak self] buffer, _ in
             self?.handleInput(buffer: buffer)
@@ -230,6 +329,13 @@ final class PushToTalkRecorder {
 
     func stop() -> Int {
         stateQueue.sync {
+            let callback = chunkHandler
+            if let opusEncoder, let callback {
+                let flushedPackets = (try? opusEncoder.flush()) ?? []
+                for packet in flushedPackets {
+                    callback(packet)
+                }
+            }
             recording = false
             chunkHandler = nil
             let durationMs = Int((Double(recordedBytes) / (Double(cfg.width) * Double(cfg.channels) * cfg.rate)) * 1000.0)
@@ -276,7 +382,18 @@ final class PushToTalkRecorder {
             guard recording else { return }
             recordedBytes += data.count
         }
-        callback(data)
+        if let opusEncoder {
+            do {
+                let packets = try opusEncoder.encodePCM(data)
+                for packet in packets {
+                    callback(packet)
+                }
+            } catch {
+                return
+            }
+        } else {
+            callback(data)
+        }
     }
 }
 
@@ -882,15 +999,12 @@ struct HallidayMicStreamer {
     static func main() {
         do {
             let options = try CLIOptions.parse(from: Array(CommandLine.arguments.dropFirst()))
-            if options.codec.lowercased() != "pcm16" {
-                throw AppError.unsupportedCodec(options.codec)
-            }
 
             guard requestMicrophonePermission() else {
                 throw AppError.microphoneAccessDenied
             }
 
-            let cfg = AudioConfig.default
+            let cfg = AudioConfig.make(codec: options.codec)
             let recorder = try PushToTalkRecorder(cfg: cfg)
             let keyboard = KeyboardMonitor()
             let stateQueue = DispatchQueue(label: "halliday.app.state")

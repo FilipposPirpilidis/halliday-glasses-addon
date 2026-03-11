@@ -926,7 +926,8 @@ def parse_audio_codecs(raw_value: str) -> tuple[str, ...]:
             decoded = []
         values = [str(item).strip() for item in decoded if str(item).strip()]
     else:
-        values = [item.strip() for item in raw_value.split(",") if item.strip()]
+        normalized = raw_value.replace("\r", "\n").replace(",", "\n")
+        values = [item.strip() for item in normalized.splitlines() if item.strip()]
 
     codecs: list[str] = []
     for value in values:

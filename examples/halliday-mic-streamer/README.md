@@ -3,7 +3,7 @@
 macOS console application that:
 
 - captures microphone audio
-- converts it to PCM16 mono at 16 kHz
+- converts it to PCM16 mono at 16 kHz or encodes Opus at 16 kHz mono
 - connects to Home Assistant `/api/websocket`
 - streams live microphone audio continuously while running
 - prints `transcript-chunk` and final `transcript` responses
@@ -29,7 +29,7 @@ swift run halliday-mic-streamer \
 Optional flags:
 
 - `--scheme ws`
-- `--codec pcm16`
+- `--codec pcm16|opus`
 - `--language en`
 - `--ha-token <token>` or `HA_TOKEN=...`
 - `--translate-enabled true`
@@ -49,9 +49,20 @@ swift run halliday-mic-streamer \
   --translate-target el
 ```
 
+Example with Opus:
+
+```bash
+cd examples/halliday-mic-streamer
+swift run halliday-mic-streamer \
+  --host homeassistant.local \
+  --port 8123 \
+  --ha-token <your_home_assistant_token> \
+  --codec opus
+```
+
 ## Notes
 
 - The first run needs microphone permission.
 - The terminal or app may need macOS Accessibility permission so the global ESC key monitor works.
 - Home Assistant must have the `halliday_glasses_bridge` custom integration installed and configured.
-- The bundled Swift mic streamer currently captures PCM16 only. The add-on can accept Opus-capable clients separately.
+- `--codec opus` uses the native macOS Opus encoder and sends packetized Opus at 16 kHz mono.
