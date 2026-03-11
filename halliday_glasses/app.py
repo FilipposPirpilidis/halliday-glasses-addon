@@ -876,7 +876,10 @@ async def serve(cfg: ServerConfig) -> None:
         session = WebSocketSession(websocket, cfg, vosk_model, translator)
         await session.run()
 
-    async def websocket_process_request(path, _headers):
+    async def websocket_process_request(path, headers):
+        upgrade = (headers.get("Upgrade") or "").strip().lower()
+        if upgrade == "websocket":
+            return None
         if path in {"", "/"}:
             body = b"Halliday Glasses WebSocket bridge. Connect a client to /ws.\n"
             return HTTPStatus.OK, [("Content-Type", "text/plain; charset=utf-8")], body
