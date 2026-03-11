@@ -611,19 +611,12 @@ class HallidaySession:
             if enabled is not None:
                 self.state.translate_enabled = bool(enabled)
             if pair:
-                if not self.is_translation_pair_allowed(pair):
-                    await self.emit_error_text(f"Translation pair '{pair}' is not allowed")
-                    await self.send_translation_config()
-                    return
                 source, target = split_translation_pair(pair)
-            elif source and target and not self.is_translation_pair_allowed(f"{source}-{target}"):
-                await self.emit_error_text(f"Translation pair '{source}-{target}' is not allowed")
-                await self.send_translation_config()
-                return
             if source:
                 self.state.translate_source = source
             if target:
                 self.state.translate_target = target
+            self.remember_translation_pair()
             await self.send_translation_config()
             return
 
@@ -734,14 +727,13 @@ class HallidaySession:
             return ""
         return f"{source}-{target}"
 
-    def is_translation_pair_allowed(self, pair: str) -> bool:
-        allowed = self.state.translate_pairs
-        if not allowed:
-            return True
-        source, target = split_translation_pair(pair)
-        if not source or not target:
-            return False
-        return f"{source}-{target}" in allowed
+    def remember_translation_pair(self) -> None:
+        current_pair = self.current_translation_pair()
+        if not current_pair:
+            return
+        if current_pair in self.state.translate_pairs:
+            return
+        self.state.translate_pairs = tuple([*self.state.translate_pairs, current_pair])
 
 
 def split_translation_pair(pair: str) -> tuple[str, str]:
