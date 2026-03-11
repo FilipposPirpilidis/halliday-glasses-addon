@@ -30,7 +30,6 @@ Default add-on options:
 - `model_path`: filesystem path to the Vosk model directory, default `/models/vosk-model-small-en-us-0.15`
 - `enable_openai_realtime`: switch backend from Vosk to OpenAI Realtime
 - `openai_api_key`: OpenAI API key for Realtime transcription
-- `openai_realtime_model`: realtime session model, default `gpt-realtime-mini`
 - `openai_transcription_model`: transcription model inside the realtime session, default `gpt-4o-mini-transcribe`
 - `openai_prompt`: optional transcription prompt
 

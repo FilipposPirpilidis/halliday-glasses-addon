@@ -8,7 +8,6 @@ MODEL_VARIANT="$(bashio::config 'model_variant')"
 MODEL_PATH="$(bashio::config 'model_path')"
 ENABLE_OPENAI_REALTIME="$(bashio::config 'enable_openai_realtime')"
 OPENAI_API_KEY="$(bashio::config 'openai_api_key')"
-OPENAI_REALTIME_MODEL="$(bashio::config 'openai_realtime_model')"
 OPENAI_TRANSCRIPTION_MODEL="$(bashio::config 'openai_transcription_model')"
 OPENAI_PROMPT="$(bashio::config 'openai_prompt')"
 
@@ -38,7 +37,6 @@ bashio::log.info "Using Vosk model at ${RESOLVED_MODEL_PATH}"
 
 if bashio::var.true "${ENABLE_OPENAI_REALTIME}"; then
   bashio::log.info "OpenAI Realtime backend enabled"
-  bashio::log.info "OpenAI session model ${OPENAI_REALTIME_MODEL}"
   bashio::log.info "OpenAI transcription model ${OPENAI_TRANSCRIPTION_MODEL}"
   exec python3 /app.py \
     --listen-host "${SERVER_HOST}" \
@@ -47,7 +45,6 @@ if bashio::var.true "${ENABLE_OPENAI_REALTIME}"; then
     --model-path "${RESOLVED_MODEL_PATH}" \
     --enable-openai-realtime \
     --openai-api-key "${OPENAI_API_KEY}" \
-    --openai-realtime-model "${OPENAI_REALTIME_MODEL}" \
     --openai-transcription-model "${OPENAI_TRANSCRIPTION_MODEL}" \
     --openai-prompt "${OPENAI_PROMPT}"
 else
