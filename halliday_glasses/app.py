@@ -538,8 +538,8 @@ class HallidaySession:
         self.state = AudioState(language=cfg.language)
         self.state.translate_enabled = cfg.translate_enabled
         self.state.translate_pairs = cfg.translate_pairs
-        self.state.translate_source = cfg.translate_source
-        self.state.translate_target = cfg.translate_target
+        self.state.translate_source = normalize_language_code(cfg.translate_source)
+        self.state.translate_target = normalize_language_code(cfg.translate_target)
         self._closed = False
         self.backend = None
 
@@ -611,8 +611,8 @@ class HallidaySession:
         if event_type == "translate-set":
             enabled = data.get("enabled")
             pair = (data.get("pair") or "").strip()
-            source = (data.get("source") or "").strip()
-            target = (data.get("target") or "").strip()
+            source = normalize_language_code((data.get("source") or "").strip())
+            target = normalize_language_code((data.get("target") or "").strip())
             if enabled is not None:
                 self.state.translate_enabled = bool(enabled)
             if pair:
@@ -748,7 +748,20 @@ class HallidaySession:
 def split_translation_pair(pair: str) -> tuple[str, str]:
     normalized = pair.strip().replace("->", "-").replace("_", "-")
     source, _, target = normalized.partition("-")
-    return source.strip(), target.strip()
+    return normalize_language_code(source), normalize_language_code(target)
+
+
+def normalize_language_code(value: str) -> str:
+    raw = (value or "").strip().lower().replace("_", "-")
+    if not raw:
+        return ""
+    first_line = raw.splitlines()[0].strip()
+    first_token = first_line.split()[0] if first_line else ""
+    if not first_token:
+        return ""
+    if first_token == "auto":
+        return "auto"
+    return first_token.split("-")[0].strip()
 
 
 def parse_translation_pairs(raw_value: str) -> tuple[str, ...]:
@@ -830,8 +843,8 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--translate-timeout-seconds", type=float, default=30.0)
     args = parser.parse_args()
     translate_pairs = parse_translation_pairs(args.translate_pairs)
-    translate_source = args.translate_source
-    translate_target = args.translate_target
+    translate_source = normalize_language_code(args.translate_source)
+    translate_target = normalize_language_code(args.translate_target)
     if not translate_target and translate_pairs:
         translate_source, translate_target = split_translation_pair(translate_pairs[0])
     if translate_target and translate_pairs:
