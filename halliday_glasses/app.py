@@ -552,12 +552,17 @@ class HallidaySession:
                 await self.handle_event(event, payload)
         except EOFError:
             LOGGER.info("Client disconnected: %s", peer)
+        except (BrokenPipeError, ConnectionResetError):
+            LOGGER.info("Client disconnected during write: %s", peer)
         except Exception:
             LOGGER.exception("Session failure for %s", peer)
         finally:
             await self.close_backend()
             self.writer.close()
-            await self.writer.wait_closed()
+            try:
+                await self.writer.wait_closed()
+            except ConnectionResetError:
+                pass
 
     async def handle_event(self, event: dict[str, Any], payload: bytes) -> None:
         event_type = event.get("type")
@@ -662,7 +667,11 @@ class HallidaySession:
 
     async def send_event(self, event_type: str, data: Optional[dict[str, Any]] = None, payload: bytes = b"") -> None:
         self.writer.write(event_bytes(event_type, data, payload))
-        await self.writer.drain()
+        try:
+            await self.writer.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            self._closed = True
+            raise
 
     async def emit_partial_text(self, text: str) -> None:
         text = text.strip()
