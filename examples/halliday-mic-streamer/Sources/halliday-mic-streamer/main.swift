@@ -16,7 +16,6 @@ struct CLIOptions {
     var scheme: String = "ws"
     var host: String = "homeassistant.local"
     var port: Int = 8123
-    var ingressPath: String? = ProcessInfo.processInfo.environment["HA_INGRESS_PATH"]
     var language: String = "en"
     var haToken: String? = ProcessInfo.processInfo.environment["HA_TOKEN"]
     var translateEnabled: Bool?
@@ -51,10 +50,6 @@ struct CLIOptions {
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--ha-token") }
                 options.haToken = args[index]
-            case "--ingress-path":
-                index += 1
-                guard index < args.count else { throw CLIError.missingValue("--ingress-path") }
-                options.ingressPath = args[index]
             case "--translate-enabled":
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--translate-enabled") }
@@ -118,9 +113,11 @@ enum AppError: Error, CustomStringConvertible {
     case malformedHeader
     case invalidJSON
     case emptyHost
-    case missingIngressPath
     case missingHAToken
     case invalidWebSocketURL
+    case authRequired
+    case authenticationFailed
+    case missingSessionID
 
     var description: String {
         switch self {
@@ -142,12 +139,16 @@ enum AppError: Error, CustomStringConvertible {
             return "Invalid JSON received from server"
         case .emptyHost:
             return "Host cannot be empty"
-        case .missingIngressPath:
-            return "Missing Home Assistant ingress path"
         case .missingHAToken:
             return "Missing Home Assistant token"
         case .invalidWebSocketURL:
             return "Invalid WebSocket URL"
+        case .authRequired:
+            return "Home Assistant authentication handshake failed"
+        case .authenticationFailed:
+            return "Home Assistant authentication was rejected"
+        case .missingSessionID:
+            return "Home Assistant did not return a session_id"
         }
     }
 }
@@ -460,7 +461,17 @@ func writeAll(stream: OutputStream, data: Data) throws {
     }
 }
 
-final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+final class PendingResult: @unchecked Sendable {
+    let semaphore = DispatchSemaphore(value: 0)
+    var payload: [String: Any]?
+    var error: Error?
+}
+
+final class AppState: @unchecked Sendable {
+    var client: HomeAssistantWebSocketClient?
+}
+
+final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
     var onPartialTranscript: ((String) -> Void)?
     var onFinalTranscript: ((String, String?, Bool) -> Void)?
     var onTranslationConfig: ((TranslationConfig) -> Void)?
@@ -469,7 +480,6 @@ final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unc
     private let scheme: String
     private let host: String
     private let port: Int
-    private let ingressPath: String
     private let haToken: String
     private let language: String
     private let cfg: AudioConfig
@@ -479,12 +489,14 @@ final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unc
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
     private var closed = false
+    private var nextMessageID = 1
+    private var sessionID: String?
+    private var pendingResults: [Int: PendingResult] = [:]
 
-    init(scheme: String, host: String, port: Int, ingressPath: String, haToken: String, language: String, cfg: AudioConfig) {
+    init(scheme: String, host: String, port: Int, haToken: String, language: String, cfg: AudioConfig) {
         self.scheme = scheme
         self.host = host
         self.port = port
-        self.ingressPath = ingressPath
         self.haToken = haToken
         self.language = language
         self.cfg = cfg
@@ -494,43 +506,54 @@ final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unc
         guard !host.isEmpty else {
             throw AppError.emptyHost
         }
-        guard !ingressPath.isEmpty else {
-            throw AppError.missingIngressPath
-        }
         guard !haToken.isEmpty else {
             throw AppError.missingHAToken
         }
-        let trimmedPath = ingressPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: "\(scheme)://\(host):\(port)/\(trimmedPath)/ws") else {
+        guard let url = URL(string: "\(scheme)://\(host):\(port)/api/websocket") else {
             throw AppError.invalidWebSocketURL
         }
 
         let configuration = URLSessionConfiguration.default
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         self.session = session
-        var request = URLRequest(url: url)
-        request.addValue("Bearer \(haToken)", forHTTPHeaderField: "Authorization")
-        let task = session.webSocketTask(with: request)
+        let task = session.webSocketTask(with: url)
         self.task = task
         task.resume()
-
-        try send(eventType: "transcribe", data: ["language": language])
-        try send(
-            eventType: "audio-start",
-            data: ["rate": Int(cfg.rate), "width": cfg.width, "channels": Int(cfg.channels)]
-        )
-
+        try authenticate()
         readLoop()
+        let response = try sendCommandSync(
+            type: "halliday_glasses_bridge/open_stream",
+            payload: [
+                "language": language,
+                "rate": Int(cfg.rate),
+                "width": cfg.width,
+                "channels": Int(cfg.channels)
+            ]
+        )
+        guard let sessionID = response["session_id"] as? String, !sessionID.isEmpty else {
+            throw AppError.missingSessionID
+        }
+        stateQueue.sync {
+            self.sessionID = sessionID
+        }
     }
 
     func sendAudioChunk(_ chunk: Data) {
         writeQueue.async { [weak self] in
             guard let self else { return }
             do {
-                try self.send(
-                    eventType: "audio-chunk",
-                    data: ["rate": Int(self.cfg.rate), "width": self.cfg.width, "channels": Int(self.cfg.channels)],
-                    payload: chunk
+                guard let sessionID = self.stateQueue.sync(execute: { self.sessionID }) else {
+                    throw AppError.missingSessionID
+                }
+                try self.sendCommandAsync(
+                    type: "halliday_glasses_bridge/audio_chunk",
+                    payload: [
+                        "session_id": sessionID,
+                        "audio": chunk.base64EncodedString(),
+                        "rate": Int(self.cfg.rate),
+                        "width": self.cfg.width,
+                        "channels": Int(self.cfg.channels)
+                    ]
                 )
             } catch {
                 self.fail(error)
@@ -542,7 +565,13 @@ final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unc
         writeQueue.async { [weak self] in
             guard let self else { return }
             do {
-                try self.send(eventType: "audio-stop", data: [:])
+                guard let sessionID = self.stateQueue.sync(execute: { self.sessionID }) else {
+                    return
+                }
+                try self.sendCommandAsync(
+                    type: "halliday_glasses_bridge/close_stream",
+                    payload: ["session_id": sessionID]
+                )
             } catch {
                 self.fail(error)
             }
@@ -553,7 +582,13 @@ final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unc
         writeQueue.async { [weak self] in
             guard let self else { return }
             do {
-                try self.send(eventType: "translate-get", data: [:])
+                guard let sessionID = self.stateQueue.sync(execute: { self.sessionID }) else {
+                    throw AppError.missingSessionID
+                }
+                try self.sendCommandAsync(
+                    type: "halliday_glasses_bridge/translate_get",
+                    payload: ["session_id": sessionID]
+                )
             } catch {
                 self.fail(error)
             }
@@ -564,7 +599,10 @@ final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unc
         writeQueue.async { [weak self] in
             guard let self else { return }
             do {
-                var data: [String: Any] = [:]
+                guard let sessionID = self.stateQueue.sync(execute: { self.sessionID }) else {
+                    throw AppError.missingSessionID
+                }
+                var data: [String: Any] = ["session_id": sessionID]
                 if let enabled {
                     data["enabled"] = enabled
                 }
@@ -574,7 +612,7 @@ final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unc
                 if let target, !target.isEmpty {
                     data["target"] = target
                 }
-                try self.send(eventType: "translate-set", data: data)
+                try self.sendCommandAsync(type: "halliday_glasses_bridge/translate_set", payload: data)
             } catch {
                 self.fail(error)
             }
@@ -585,24 +623,63 @@ final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unc
         close()
     }
 
-    private func send(eventType: String, data: [String: Any], payload: Data = Data()) throws {
+    private func authenticate() throws {
+        let first = try receiveMessageSync()
+        guard (first["type"] as? String) == "auth_required" else {
+            throw AppError.authRequired
+        }
+        try sendRawSync(["type": "auth", "access_token": haToken])
+        let second = try receiveMessageSync()
+        let eventType = second["type"] as? String ?? ""
+        if eventType != "auth_ok" {
+            throw AppError.authenticationFailed
+        }
+    }
+
+    private func sendCommandSync(type: String, payload: [String: Any]) throws -> [String: Any] {
+        let id = stateQueue.sync { () -> Int in
+            let id = nextMessageID
+            nextMessageID += 1
+            return id
+        }
+        let pending = PendingResult()
+        stateQueue.sync {
+            pendingResults[id] = pending
+        }
+        var message = payload
+        message["id"] = id
+        message["type"] = type
+        try sendRawSync(message)
+        pending.semaphore.wait()
+        _ = stateQueue.sync {
+            pendingResults.removeValue(forKey: id)
+        }
+        if let error = pending.error {
+            throw error
+        }
+        return pending.payload ?? [:]
+    }
+
+    private func sendCommandAsync(type: String, payload: [String: Any]) throws {
+        let id = stateQueue.sync { () -> Int in
+            let id = nextMessageID
+            nextMessageID += 1
+            return id
+        }
+        var message = payload
+        message["id"] = id
+        message["type"] = type
+        try sendRawSync(message)
+    }
+
+    private func sendRawSync(_ object: [String: Any]) throws {
         let isClosed = stateQueue.sync { closed }
         guard !isClosed, let task else { return }
-
-        var message: [String: Any] = ["type": eventType]
-        if !data.isEmpty {
-            message["data"] = data
-        }
-        if !payload.isEmpty {
-            message["audio"] = payload.base64EncodedString()
-        }
-        let raw = try JSONSerialization.data(withJSONObject: message)
+        let raw = try JSONSerialization.data(withJSONObject: object)
         guard let text = String(data: raw, encoding: .utf8) else {
             throw AppError.invalidJSON
         }
-        final class SendState: @unchecked Sendable {
-            var error: Error?
-        }
+        final class SendState: @unchecked Sendable { var error: Error? }
         let sendState = SendState()
         let semaphore = DispatchSemaphore(value: 0)
         task.send(.string(text)) { error in
@@ -613,6 +690,35 @@ final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unc
         if let sendError = sendState.error {
             throw sendError
         }
+    }
+
+    private func receiveMessageSync() throws -> [String: Any] {
+        guard let task else {
+            throw AppError.streamConnectionFailed
+        }
+        final class ReceiveState: @unchecked Sendable {
+            var message: URLSessionWebSocketTask.Message?
+            var error: Error?
+        }
+        let receiveState = ReceiveState()
+        let semaphore = DispatchSemaphore(value: 0)
+        task.receive { result in
+            switch result {
+            case let .failure(error):
+                receiveState.error = error
+            case let .success(message):
+                receiveState.message = message
+            }
+            semaphore.signal()
+        }
+        semaphore.wait()
+        if let error = receiveState.error {
+            throw error
+        }
+        guard let message = receiveState.message else {
+            throw AppError.streamConnectionFailed
+        }
+        return try decodeWebSocketMessage(message)
     }
 
     private func readLoop() {
@@ -687,17 +793,40 @@ final class HallidayWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unc
     }
 
     private func handleServerEvent(_ event: [String: Any]) throws {
-        let type = event["type"] as? String ?? ""
-        let data = event["data"] as? [String: Any] ?? [:]
+        let messageType = event["type"] as? String ?? ""
+        if messageType == "result" {
+            let id = event["id"] as? Int ?? intValue(event["id"])
+            let success = (event["success"] as? Bool) ?? false
+            let result = event["result"] as? [String: Any] ?? [:]
+            let errorBody = event["error"] as? [String: Any] ?? [:]
+            let pending = stateQueue.sync { pendingResults[id] }
+            if let pending {
+                if success {
+                    pending.payload = result
+                } else {
+                    let message = (errorBody["message"] as? String) ?? "Home Assistant websocket command failed"
+                    pending.error = NSError(domain: "HallidayMicStreamer", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+                }
+                pending.semaphore.signal()
+            }
+            return
+        }
+
+        guard messageType == "event" else {
+            return
+        }
+
+        let data = event["event"] as? [String: Any] ?? [:]
+        let type = data["type"] as? String ?? ""
         let text = (data["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if type == "transcript-chunk", !text.isEmpty {
+        if type == "transcript_chunk", !text.isEmpty {
             onPartialTranscript?(text)
         } else if type == "transcript" {
             let originalText = (data["original_text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let translated = (data["translated"] as? Bool) ?? false
             onFinalTranscript?(text, originalText, translated)
-        } else if type == "translate-config" {
+        } else if type == "translate_config" {
             let config = TranslationConfig(
                 enabled: (data["enabled"] as? Bool) ?? false,
                 source: (data["source"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
@@ -732,8 +861,8 @@ func requestMicrophonePermission() -> Bool {
 }
 
 func printUsageAndExit() -> Never {
-    print("Usage: halliday-mic-streamer [--scheme ws|wss] [--host HOST] [--port PORT] --ingress-path api/hassio_ingress/<id> --ha-token TOKEN [--language LANG] [--translate-enabled true|false] [--translate-source LANG] [--translate-target LANG]")
-    print("  Default target: ws://homeassistant.local:8123/api/hassio_ingress/<id>/ws")
+    print("Usage: halliday-mic-streamer [--scheme ws|wss] [--host HOST] [--port PORT] --ha-token TOKEN [--language LANG] [--translate-enabled true|false] [--translate-source LANG] [--translate-target LANG]")
+    print("  Default target: ws://homeassistant.local:8123/api/websocket")
     exit(0)
 }
 
@@ -751,15 +880,11 @@ struct HallidayMicStreamer {
             let recorder = try PushToTalkRecorder(cfg: cfg)
             let keyboard = KeyboardMonitor()
             let stateQueue = DispatchQueue(label: "halliday.app.state")
-
-            var client: HallidayWebSocketClient?
+            let appState = AppState()
 
             print("Live streaming ready.")
             print("Streaming microphone audio continuously. Press ESC to quit.")
             print("Target: \(options.scheme)://\(options.host):\(options.port)")
-            if let ingressPath = options.ingressPath, !ingressPath.isEmpty {
-                print("Ingress path: \(ingressPath)")
-            }
             if let translateEnabled = options.translateEnabled {
                 print("Requested translation: \(translateEnabled ? "enabled" : "disabled")")
             }
@@ -767,11 +892,10 @@ struct HallidayMicStreamer {
                 print("Requested translation pair: \(translateSource)-\(translateTarget)")
             }
 
-            let streamingClient = HallidayWebSocketClient(
+            let streamingClient = HomeAssistantWebSocketClient(
                 scheme: options.scheme,
                 host: options.host,
                 port: options.port,
-                ingressPath: options.ingressPath ?? "",
                 haToken: options.haToken ?? "",
                 language: options.language,
                 cfg: cfg
@@ -799,13 +923,13 @@ struct HallidayMicStreamer {
             streamingClient.onError = { error in
                 print("[err] \(error)")
                 stateQueue.async {
-                    client = nil
+                    appState.client = nil
                 }
             }
 
             try streamingClient.start()
             stateQueue.sync {
-                client = streamingClient
+                appState.client = streamingClient
             }
             streamingClient.requestTranslationConfig()
             let requestedEnabled = options.translateEnabled ?? ((options.translateSource != nil || options.translateTarget != nil) ? true : nil)
@@ -825,9 +949,9 @@ struct HallidayMicStreamer {
                 stateQueue.sync {
                     let durationMs = recorder.stop()
                     print("\n[rec] STOP  (\(durationMs) ms)")
-                    client?.finish()
-                    client?.cancel()
-                    client = nil
+                    appState.client?.finish()
+                    appState.client?.cancel()
+                    appState.client = nil
                 }
                 print("\nBye.")
                 keyboard.stop()

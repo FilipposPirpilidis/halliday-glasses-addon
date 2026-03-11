@@ -1,0 +1,10 @@
+{
+  "domain": "halliday_glasses_bridge",
+  "name": "Halliday Glasses Bridge",
+  "version": "1.0.0",
+  "documentation": "https://github.com/FilipposPirpilidis/halliday-glasses-addon",
+  "issue_tracker": "https://github.com/FilipposPirpilidis/halliday-glasses-addon/issues",
+  "dependencies": ["websocket_api"],
+  "codeowners": ["@FilipposPirpilidis"],
+  "iot_class": "local_push"
+}

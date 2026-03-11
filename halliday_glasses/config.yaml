@@ -15,6 +15,10 @@ ingress_port: 8099
 ingress_stream: true
 homeassistant_api: false
 hassio_api: false
+ports:
+  10310/tcp: 10310
+ports_description:
+  10310/tcp: "Halliday internal Wyoming bridge port"
 options:
   server_host: "0.0.0.0"
   server_port: 10310

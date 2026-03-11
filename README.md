@@ -17,6 +17,30 @@ Set `stt_backend` to exactly one of these:
 - `language`: language hint, default `en`
 - `stt_backend`: `vosk`, `openai`, or `whisplaybot`
 
+## Home Assistant Integration
+
+This repo also includes a custom integration in [`custom_components/halliday_glasses_bridge`](/Users/filippospirpilidis/Projects/halliday-glasses-addon/custom_components/halliday_glasses_bridge) so clients can connect only to Home Assistant `/api/websocket`.
+
+Add this to Home Assistant `configuration.yaml`:
+
+```yaml
+halliday_glasses_bridge:
+  addon_host: homeassistant.local
+  addon_port: 10310
+```
+
+`addon_host` and `addon_port` are used only by Home Assistant to reach the Halliday add-on internally. External clients should not connect there directly.
+
+### Dashboard
+
+The integration is command-based and does not create entities by itself, so there is no built-in Lovelace card yet. The practical validation flow is:
+
+1. install the custom integration
+2. restart Home Assistant
+3. run the Swift client or the Python test client in [`examples/ha-ws-test`](/Users/filippospirpilidis/Projects/halliday-glasses-addon/examples/ha-ws-test)
+
+If you want a Lovelace card later, the right next step is adding entities or a custom panel that subscribes to the `halliday_glasses_bridge` WebSocket events.
+
 ## Translation Options
 
 - `translate_enabled`: enable final-text translation after STT
@@ -56,27 +80,30 @@ For the LM8850 prebuilt image, see:
 
 ## Client Protocol
 
-Clients should connect through the Home Assistant ingress WebSocket endpoint, not directly to the internal Wyoming TCP server.
+Clients should connect through the Home Assistant WebSocket API, not directly to the add-on.
 
 The external client URL is:
 
 ```text
-ws://<home-assistant-host>:8123/api/hassio_ingress/<ingress_id>/ws
+ws://<home-assistant-host>:8123/api/websocket
 ```
 
 or:
 
 ```text
-wss://<home-assistant-host>:8123/api/hassio_ingress/<ingress_id>/ws
+wss://<home-assistant-host>:8123/api/websocket
 ```
 
-Use the Home Assistant long-lived access token as:
+The client must first complete the normal Home Assistant WebSocket auth handshake:
 
-```text
-Authorization: Bearer <token>
+1. receive `auth_required`
+2. send:
+
+```json
+{"type":"auth","access_token":"<your_home_assistant_token>"}
 ```
 
-To get `<ingress_id>`, open the add-on with **Open Web UI** and copy the `api/hassio_ingress/<ingress_id>` part from the browser URL.
+3. wait for `auth_ok`
 
 Each message is:
 
@@ -85,94 +112,99 @@ Each message is:
 
 ### Client -> Add-on
 
-Send these events:
+Send these Home Assistant WebSocket commands:
 
-- `describe`
-  Requests add-on info and current translation config.
-- `transcribe`
-  Optional language hint.
-- `audio-start`
-  Starts a streaming session.
-- `audio-chunk`
-  Sends PCM16 mono audio bytes.
-- `audio-stop`
-  Ends the current utterance or stream.
-- `translate-get`
+- `halliday_glasses_bridge/open_stream`
+  Opens a new stream and returns `session_id`.
+- `halliday_glasses_bridge/audio_chunk`
+  Sends PCM16 mono audio bytes for an existing session.
+- `halliday_glasses_bridge/close_stream`
+  Closes a stream.
+- `halliday_glasses_bridge/translate_get`
   Requests current runtime translation settings.
-- `translate-set`
-  Updates runtime translation settings without reopening Home Assistant config.
-- `ping`
-  Health check.
+- `halliday_glasses_bridge/translate_set`
+  Updates runtime translation settings for a session.
 
-Example `transcribe`:
+Example `open_stream`:
 
 ```json
-{"type":"transcribe","data":{"language":"en"}}
+{"id":1,"type":"halliday_glasses_bridge/open_stream","language":"en","rate":16000,"width":2,"channels":1}
 ```
 
-Example `audio-start`:
+Example success result:
 
 ```json
-{"type":"audio-start","data":{"rate":16000,"width":2,"channels":1}}
+{"id":1,"type":"result","success":true,"result":{"session_id":"139901234560000:1"}}
 ```
 
-Example `audio-chunk` header:
+Example `audio_chunk`:
 
 ```json
-{"type":"audio-chunk","data":{"rate":16000,"width":2,"channels":1},"audio":"<base64-pcm16-mono>"}
+{"id":2,"type":"halliday_glasses_bridge/audio_chunk","session_id":"139901234560000:1","rate":16000,"width":2,"channels":1,"audio":"<base64-pcm16-mono>"}
 ```
 
 Example `translate-set`:
 
 ```json
-{"type":"translate-set","data":{"enabled":true,"source":"en","target":"el"}}
+{"id":3,"type":"halliday_glasses_bridge/translate_set","session_id":"139901234560000:1","enabled":true,"source":"en","target":"el"}
 ```
 
 or:
 
 ```json
-{"type":"translate-set","data":{"enabled":true,"pair":"en-el"}}
+{"id":3,"type":"halliday_glasses_bridge/translate_set","session_id":"139901234560000:1","enabled":true,"pair":"en-el"}
 ```
 
 ### Add-on -> Client
 
-The add-on sends these events back:
+Home Assistant sends normal WebSocket `event` messages back:
 
-- `info`
-  Response to `describe`, including backend info and translation config.
-- `transcript-chunk`
+- `transcript_chunk`
   Partial live caption text.
 - `transcript`
   Final caption text.
-- `translate-config`
+- `translate_config`
   Current runtime translation settings.
-- `pong`
-  Response to `ping`.
 - `error`
   Error message.
 
-Example `transcript-chunk`:
+Example `transcript_chunk` event:
 
 ```json
-{"type":"transcript-chunk","data":{"text":"hello wor"}}
+{"id":1,"type":"event","event":{"type":"transcript_chunk","text":"hello wor"}}
 ```
 
 Example final `transcript` without translation:
 
 ```json
-{"type":"transcript","data":{"text":"hello world"}}
+{"id":1,"type":"event","event":{"type":"transcript","text":"hello world"}}
 ```
 
 Example final `transcript` with translation enabled:
 
 ```json
-{"type":"transcript","data":{"text":"γειά σου κόσμε","original_text":"hello world","translated":true,"source_language":"en","target_language":"el"}}
+{"id":1,"type":"event","event":{"type":"transcript","text":"γειά σου κόσμε","original_text":"hello world","translated":true,"source_language":"en","target_language":"el"}}
 ```
 
-Example `translate-config`:
+Example `translate_config` event:
 
 ```json
-{"type":"translate-config","data":{"enabled":true,"pairs":["en-el","el-en"],"pair":"en-el","source":"en","target":"el"}}
+{"id":1,"type":"event","event":{"type":"translate_config","enabled":true,"pairs":["en-el","el-en"],"pair":"en-el","source":"en","target":"el"}}
+```
+
+## Test Client
+
+A minimal Home Assistant WebSocket test client is included in [`examples/ha-ws-test/ha_ws_test.py`](/Users/filippospirpilidis/Projects/halliday-glasses-addon/examples/ha-ws-test/ha_ws_test.py).
+
+Example:
+
+```bash
+cd /Users/filippospirpilidis/Projects/halliday-glasses-addon/examples/ha-ws-test
+python3 ha_ws_test.py \
+  --host homeassistant.local \
+  --port 8123 \
+  --ha-token <your_home_assistant_token> \
+  --audio-file /absolute/path/to/sample.wav
 ```
 
 ## Notes
