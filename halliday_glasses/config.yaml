@@ -28,6 +28,12 @@ options:
   openai_transcription_model: "gpt-4o-mini-transcribe"
   openai_prompt: ""
   whisplay_recognize_url: "http://192.168.2.29:8801/recognize"
+  whisplay_timeout_seconds: 60
+  whisplay_partial_window_seconds: 2
+  whisplay_partial_inference_seconds: 4
+  whisplay_auto_final_silence_ms: 900
+  whisplay_auto_final_min_seconds: 1
+  whisplay_auto_final_silence_level: 700
 schema:
   server_host: str
   server_port: port
@@ -40,3 +46,9 @@ schema:
   openai_transcription_model: str
   openai_prompt: str
   whisplay_recognize_url: str
+  whisplay_timeout_seconds: int
+  whisplay_partial_window_seconds: int
+  whisplay_partial_inference_seconds: int
+  whisplay_auto_final_silence_ms: int
+  whisplay_auto_final_min_seconds: int
+  whisplay_auto_final_silence_level: int

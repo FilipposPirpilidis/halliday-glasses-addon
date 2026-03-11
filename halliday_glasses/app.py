@@ -619,6 +619,12 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--openai-vad-prefix-padding-ms", type=int, default=300)
     parser.add_argument("--openai-vad-silence-duration-ms", type=int, default=500)
     parser.add_argument("--whisplay-recognize-url", default="http://192.168.2.29:8801/recognize")
+    parser.add_argument("--whisplay-timeout-seconds", type=float, default=60.0)
+    parser.add_argument("--whisplay-partial-window-seconds", type=float, default=2.0)
+    parser.add_argument("--whisplay-partial-inference-seconds", type=float, default=4.0)
+    parser.add_argument("--whisplay-auto-final-silence-ms", type=int, default=900)
+    parser.add_argument("--whisplay-auto-final-min-seconds", type=float, default=0.8)
+    parser.add_argument("--whisplay-auto-final-silence-level", type=int, default=700)
     args = parser.parse_args()
 
     return ServerConfig(
@@ -635,6 +641,12 @@ def parse_args() -> ServerConfig:
         openai_vad_prefix_padding_ms=args.openai_vad_prefix_padding_ms,
         openai_vad_silence_duration_ms=args.openai_vad_silence_duration_ms,
         whisplay_recognize_url=args.whisplay_recognize_url,
+        whisplay_timeout_seconds=args.whisplay_timeout_seconds,
+        whisplay_partial_window_seconds=args.whisplay_partial_window_seconds,
+        whisplay_partial_inference_seconds=args.whisplay_partial_inference_seconds,
+        whisplay_auto_final_silence_ms=args.whisplay_auto_final_silence_ms,
+        whisplay_auto_final_min_seconds=args.whisplay_auto_final_min_seconds,
+        whisplay_auto_final_silence_level=args.whisplay_auto_final_silence_level,
     )
 
 
