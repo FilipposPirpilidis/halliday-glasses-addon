@@ -11,10 +11,20 @@ import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 
-from .const import CONF_ADDON_HOST, CONF_ADDON_PORT, DEFAULT_ADDON_HOST, DEFAULT_ADDON_PORT, DOMAIN
+from .const import (
+    CONF_ADDON_HOST,
+    CONF_ADDON_PORT,
+    DATA_COMMANDS_REGISTERED,
+    DATA_CONFIG,
+    DATA_SESSIONS,
+    DEFAULT_ADDON_HOST,
+    DEFAULT_ADDON_PORT,
+    DOMAIN,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -148,25 +158,58 @@ class HallidayBridgeSession:
 
 
 def get_upstream_config(hass: HomeAssistant) -> UpstreamConfig:
-    cfg = hass.data[DOMAIN]["config"]
+    cfg = hass.data[DOMAIN][DATA_CONFIG]
     return UpstreamConfig(host=cfg[CONF_ADDON_HOST], port=cfg[CONF_ADDON_PORT])
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     domain_config = config.get(DOMAIN, {})
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN]["config"] = {
-        CONF_ADDON_HOST: domain_config.get(CONF_ADDON_HOST, DEFAULT_ADDON_HOST),
-        CONF_ADDON_PORT: domain_config.get(CONF_ADDON_PORT, DEFAULT_ADDON_PORT),
-    }
-    hass.data[DOMAIN]["sessions"] = {}
+    hass.data[DOMAIN].setdefault(
+        DATA_CONFIG,
+        {
+            CONF_ADDON_HOST: domain_config.get(CONF_ADDON_HOST, DEFAULT_ADDON_HOST),
+            CONF_ADDON_PORT: domain_config.get(CONF_ADDON_PORT, DEFAULT_ADDON_PORT),
+        },
+    )
+    hass.data[DOMAIN].setdefault(DATA_SESSIONS, {})
+    _register_commands(hass)
+    return True
 
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][DATA_CONFIG] = {
+        CONF_ADDON_HOST: entry.data.get(CONF_ADDON_HOST, DEFAULT_ADDON_HOST),
+        CONF_ADDON_PORT: entry.data.get(CONF_ADDON_PORT, DEFAULT_ADDON_PORT),
+    }
+    hass.data[DOMAIN].setdefault(DATA_SESSIONS, {})
+    _register_commands(hass)
+    return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    sessions: dict[str, HallidayBridgeSession] = hass.data.get(DOMAIN, {}).get(DATA_SESSIONS, {})
+    for session in list(sessions.values()):
+        await session.close()
+    sessions.clear()
+    if DOMAIN in hass.data:
+        hass.data[DOMAIN][DATA_CONFIG] = {
+            CONF_ADDON_HOST: DEFAULT_ADDON_HOST,
+            CONF_ADDON_PORT: DEFAULT_ADDON_PORT,
+        }
+    return True
+
+
+def _register_commands(hass: HomeAssistant) -> None:
+    if hass.data[DOMAIN].get(DATA_COMMANDS_REGISTERED):
+        return
     websocket_api.async_register_command(hass, websocket_open_stream)
     websocket_api.async_register_command(hass, websocket_audio_chunk)
     websocket_api.async_register_command(hass, websocket_close_stream)
     websocket_api.async_register_command(hass, websocket_translate_get)
     websocket_api.async_register_command(hass, websocket_translate_set)
-    return True
+    hass.data[DOMAIN][DATA_COMMANDS_REGISTERED] = True
 
 
 @websocket_api.websocket_command(
@@ -187,7 +230,7 @@ async def websocket_open_stream(hass: HomeAssistant, connection: ActiveConnectio
     upstream = get_upstream_config(hass)
     session = HallidayBridgeSession(hass, connection, msg["id"], upstream)
     await session.connect(msg["language"], msg["rate"], msg["width"], msg["channels"])
-    sessions: dict[str, HallidayBridgeSession] = hass.data[DOMAIN]["sessions"]
+    sessions: dict[str, HallidayBridgeSession] = hass.data[DOMAIN][DATA_SESSIONS]
     session_id = f"{id(connection)}:{msg['id']}"
     sessions[session_id] = session
 
@@ -226,7 +269,7 @@ async def websocket_open_stream(hass: HomeAssistant, connection: ActiveConnectio
 )
 @websocket_api.async_response
 async def websocket_audio_chunk(hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]) -> None:
-    session: HallidayBridgeSession | None = hass.data[DOMAIN]["sessions"].get(msg["session_id"])
+    session: HallidayBridgeSession | None = hass.data[DOMAIN][DATA_SESSIONS].get(msg["session_id"])
     if session is None:
         connection.send_error(msg["id"], "not_found", "Unknown session_id")
         return
@@ -243,7 +286,7 @@ async def websocket_audio_chunk(hass: HomeAssistant, connection: ActiveConnectio
 )
 @websocket_api.async_response
 async def websocket_close_stream(hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]) -> None:
-    sessions: dict[str, HallidayBridgeSession] = hass.data[DOMAIN]["sessions"]
+    sessions: dict[str, HallidayBridgeSession] = hass.data[DOMAIN][DATA_SESSIONS]
     session = sessions.pop(msg["session_id"], None)
     if session is None:
         connection.send_error(msg["id"], "not_found", "Unknown session_id")
@@ -262,7 +305,7 @@ async def websocket_close_stream(hass: HomeAssistant, connection: ActiveConnecti
 )
 @websocket_api.async_response
 async def websocket_translate_get(hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]) -> None:
-    session: HallidayBridgeSession | None = hass.data[DOMAIN]["sessions"].get(msg["session_id"])
+    session: HallidayBridgeSession | None = hass.data[DOMAIN][DATA_SESSIONS].get(msg["session_id"])
     if session is None:
         connection.send_error(msg["id"], "not_found", "Unknown session_id")
         return
@@ -283,7 +326,7 @@ async def websocket_translate_get(hass: HomeAssistant, connection: ActiveConnect
 )
 @websocket_api.async_response
 async def websocket_translate_set(hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]) -> None:
-    session: HallidayBridgeSession | None = hass.data[DOMAIN]["sessions"].get(msg["session_id"])
+    session: HallidayBridgeSession | None = hass.data[DOMAIN][DATA_SESSIONS].get(msg["session_id"])
     if session is None:
         connection.send_error(msg["id"], "not_found", "Unknown session_id")
         return

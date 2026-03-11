@@ -21,7 +21,26 @@ Set `stt_backend` to exactly one of these:
 
 This repo also includes a custom integration in [`custom_components/halliday_glasses_bridge`](/Users/filippospirpilidis/Projects/halliday-glasses-addon/custom_components/halliday_glasses_bridge) so clients can connect only to Home Assistant `/api/websocket`.
 
-Add this to Home Assistant `configuration.yaml`:
+Install it by copying that folder into Home Assistant:
+
+```text
+/config/custom_components/halliday_glasses_bridge
+```
+
+Then restart Home Assistant and add the integration from:
+
+```text
+Settings -> Devices & Services -> Add Integration
+```
+
+Use:
+
+```text
+Add-on host: homeassistant.local
+Add-on port: 10310
+```
+
+YAML setup is still supported if you prefer `configuration.yaml`:
 
 ```yaml
 halliday_glasses_bridge:

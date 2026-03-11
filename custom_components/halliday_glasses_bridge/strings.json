@@ -1,0 +1,14 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Halliday Glasses Bridge",
+        "description": "Configure how Home Assistant connects to the Halliday Glasses add-on.",
+        "data": {
+          "addon_host": "Add-on host",
+          "addon_port": "Add-on port"
+        }
+      }
+    }
+  }
+}
