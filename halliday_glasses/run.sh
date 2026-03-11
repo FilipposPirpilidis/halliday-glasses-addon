@@ -11,13 +11,13 @@ OPENAI_API_KEY="$(bashio::config 'openai_api_key')"
 OPENAI_REALTIME_MODEL="$(bashio::config 'openai_realtime_model')"
 OPENAI_TRANSCRIPTION_MODEL="$(bashio::config 'openai_transcription_model')"
 OPENAI_PROMPT="$(bashio::config 'openai_prompt')"
-WHISPLAY_RECOGNIZE_URL="$(bashio::config 'whisplay_recognize_url')"
-WHISPLAY_TIMEOUT_SECONDS="$(bashio::config 'whisplay_timeout_seconds')"
-WHISPLAY_PARTIAL_WINDOW_SECONDS="$(bashio::config 'whisplay_partial_window_seconds')"
-WHISPLAY_PARTIAL_INFERENCE_SECONDS="$(bashio::config 'whisplay_partial_inference_seconds')"
-WHISPLAY_AUTO_FINAL_SILENCE_MS="$(bashio::config 'whisplay_auto_final_silence_ms')"
-WHISPLAY_AUTO_FINAL_MIN_SECONDS="$(bashio::config 'whisplay_auto_final_min_seconds')"
-WHISPLAY_AUTO_FINAL_SILENCE_LEVEL="$(bashio::config 'whisplay_auto_final_silence_level')"
+WHISPLAYBOT_RECOGNIZE_URL="$(bashio::config 'whisplaybot_recognize_url')"
+WHISPLAYBOT_TIMEOUT_SECONDS="$(bashio::config 'whisplaybot_timeout_seconds')"
+WHISPLAYBOT_PARTIAL_WINDOW_SECONDS="$(bashio::config 'whisplaybot_partial_window_seconds')"
+WHISPLAYBOT_PARTIAL_INFERENCE_SECONDS="$(bashio::config 'whisplaybot_partial_inference_seconds')"
+WHISPLAYBOT_AUTO_FINAL_SILENCE_MS="$(bashio::config 'whisplaybot_auto_final_silence_ms')"
+WHISPLAYBOT_AUTO_FINAL_MIN_SECONDS="$(bashio::config 'whisplaybot_auto_final_min_seconds')"
+WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL="$(bashio::config 'whisplaybot_auto_final_silence_level')"
 
 case "${MODEL_VARIANT}" in
   "0.15")
@@ -56,22 +56,22 @@ if [ "${STT_BACKEND}" = "openai" ]; then
     --openai-realtime-model "${OPENAI_REALTIME_MODEL}" \
     --openai-transcription-model "${OPENAI_TRANSCRIPTION_MODEL}" \
     --openai-prompt "${OPENAI_PROMPT}"
-elif [ "${STT_BACKEND}" = "whisplay" ]; then
-  bashio::log.info "Whisplay backend enabled"
-  bashio::log.info "Whisplay recognize URL ${WHISPLAY_RECOGNIZE_URL}"
+elif [ "${STT_BACKEND}" = "whisplaybot" ]; then
+  bashio::log.info "WhisplayBot backend enabled"
+  bashio::log.info "WhisplayBot recognize URL ${WHISPLAYBOT_RECOGNIZE_URL}"
   exec python3 /app.py \
     --listen-host "${SERVER_HOST}" \
     --listen-port "${SERVER_PORT}" \
     --language "${LANGUAGE}" \
     --stt-backend "${STT_BACKEND}" \
     --model-path "${RESOLVED_MODEL_PATH}" \
-    --whisplay-recognize-url "${WHISPLAY_RECOGNIZE_URL}" \
-    --whisplay-timeout-seconds "${WHISPLAY_TIMEOUT_SECONDS}" \
-    --whisplay-partial-window-seconds "${WHISPLAY_PARTIAL_WINDOW_SECONDS}" \
-    --whisplay-partial-inference-seconds "${WHISPLAY_PARTIAL_INFERENCE_SECONDS}" \
-    --whisplay-auto-final-silence-ms "${WHISPLAY_AUTO_FINAL_SILENCE_MS}" \
-    --whisplay-auto-final-min-seconds "${WHISPLAY_AUTO_FINAL_MIN_SECONDS}" \
-    --whisplay-auto-final-silence-level "${WHISPLAY_AUTO_FINAL_SILENCE_LEVEL}"
+    --whisplay-recognize-url "${WHISPLAYBOT_RECOGNIZE_URL}" \
+    --whisplay-timeout-seconds "${WHISPLAYBOT_TIMEOUT_SECONDS}" \
+    --whisplay-partial-window-seconds "${WHISPLAYBOT_PARTIAL_WINDOW_SECONDS}" \
+    --whisplay-partial-inference-seconds "${WHISPLAYBOT_PARTIAL_INFERENCE_SECONDS}" \
+    --whisplay-auto-final-silence-ms "${WHISPLAYBOT_AUTO_FINAL_SILENCE_MS}" \
+    --whisplay-auto-final-min-seconds "${WHISPLAYBOT_AUTO_FINAL_MIN_SECONDS}" \
+    --whisplay-auto-final-silence-level "${WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL}"
 else
   bashio::log.info "Using Vosk backend"
   bashio::log.info "Using Vosk model variant ${MODEL_VARIANT}"

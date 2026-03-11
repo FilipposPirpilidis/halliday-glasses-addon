@@ -73,13 +73,13 @@ class ServerConfig:
     openai_vad_threshold: float
     openai_vad_prefix_padding_ms: int
     openai_vad_silence_duration_ms: int
-    whisplay_recognize_url: str
-    whisplay_timeout_seconds: float
-    whisplay_partial_window_seconds: float
-    whisplay_partial_inference_seconds: float
-    whisplay_auto_final_silence_ms: int
-    whisplay_auto_final_min_seconds: float
-    whisplay_auto_final_silence_level: int
+    whisplaybot_recognize_url: str
+    whisplaybot_timeout_seconds: float
+    whisplaybot_partial_window_seconds: float
+    whisplaybot_partial_inference_seconds: float
+    whisplaybot_auto_final_silence_ms: int
+    whisplaybot_auto_final_min_seconds: float
+    whisplaybot_auto_final_silence_level: int
 
 
 @dataclass(slots=True)
@@ -298,7 +298,7 @@ class WhisplayBackend:
 
     async def start(self, state: AudioState) -> None:
         if state.width != 2 or state.channels != 1:
-            raise RuntimeError("Whisplay backend expects PCM16 mono audio")
+            raise RuntimeError("WhisplayBot backend expects PCM16 mono audio")
         self.raw_pcm.clear()
         self.bytes_transcribed_for_partial = 0
         self.last_partial_text = ""
@@ -311,7 +311,7 @@ class WhisplayBackend:
             return
         self.raw_pcm.extend(payload)
         self.pending_audio_bytes += len(payload)
-        if is_pcm_chunk_silent(payload, self.cfg.whisplay_auto_final_silence_level):
+        if is_pcm_chunk_silent(payload, self.cfg.whisplaybot_auto_final_silence_level):
             self.consecutive_silence_bytes += len(payload)
         else:
             self.consecutive_silence_bytes = 0
@@ -338,7 +338,7 @@ class WhisplayBackend:
             return ""
 
         min_bytes_for_partial = max(
-            int(float(state.rate) * 2.0 * self.cfg.whisplay_partial_window_seconds),
+            int(float(state.rate) * 2.0 * self.cfg.whisplaybot_partial_window_seconds),
             state.rate,
         )
         pending_bytes = len(self.raw_pcm) - self.bytes_transcribed_for_partial
@@ -346,7 +346,7 @@ class WhisplayBackend:
             return ""
 
         bytes_per_second = state.rate * 2
-        partial_bytes = int(float(bytes_per_second) * self.cfg.whisplay_partial_inference_seconds)
+        partial_bytes = int(float(bytes_per_second) * self.cfg.whisplaybot_partial_inference_seconds)
         clipped_pcm = bytes(self.raw_pcm[-max(partial_bytes, bytes_per_second):])
 
         try:
@@ -381,14 +381,14 @@ class WhisplayBackend:
         wav = encode_wav_pcm16_mono(pcm, sample_rate)
         payload = json.dumps({"base64": base64.b64encode(wav).decode("ascii")}).encode("utf-8")
         request = Request(
-            self.cfg.whisplay_recognize_url,
+            self.cfg.whisplaybot_recognize_url,
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
 
         def _request() -> tuple[int, str]:
-            with urlopen(request, timeout=max(self.cfg.whisplay_timeout_seconds, 10.0)) as response:
+            with urlopen(request, timeout=max(self.cfg.whisplaybot_timeout_seconds, 10.0)) as response:
                 status = getattr(response, "status", response.getcode())
                 body = response.read().decode("utf-8")
                 return status, body
@@ -396,15 +396,15 @@ class WhisplayBackend:
         try:
             status, body = await asyncio.to_thread(_request)
         except Exception as err:
-            raise RuntimeError(f"Whisplay request failed: {err}") from err
+            raise RuntimeError(f"WhisplayBot request failed: {err}") from err
 
         if not (200 <= status <= 299):
-            raise RuntimeError(f"Whisplay request failed (status {status}): {body}")
+            raise RuntimeError(f"WhisplayBot request failed (status {status}): {body}")
 
         try:
             decoded = json.loads(body)
         except json.JSONDecodeError as err:
-            raise RuntimeError(f"Whisplay response is malformed: {body}") from err
+            raise RuntimeError(f"WhisplayBot response is malformed: {body}") from err
 
         error = (decoded.get("error") or "").strip()
         if error:
@@ -414,8 +414,8 @@ class WhisplayBackend:
 
     def should_auto_finalize(self, state: AudioState) -> bool:
         bytes_per_second = state.rate * 2
-        min_bytes = max(int(float(bytes_per_second) * self.cfg.whisplay_auto_final_min_seconds), state.rate)
-        silence_bytes = int(float(bytes_per_second) * float(self.cfg.whisplay_auto_final_silence_ms) / 1000.0)
+        min_bytes = max(int(float(bytes_per_second) * self.cfg.whisplaybot_auto_final_min_seconds), state.rate)
+        silence_bytes = int(float(bytes_per_second) * float(self.cfg.whisplaybot_auto_final_silence_ms) / 1000.0)
         return (
             self.pending_audio_bytes >= min_bytes
             and self.consecutive_silence_bytes >= max(silence_bytes, state.rate // 2)
@@ -508,7 +508,7 @@ class HallidaySession:
             backend_name = {
                 "vosk": "Vosk",
                 "openai": "OpenAI Realtime",
-                "whisplay": "Whisplay",
+                "whisplaybot": "WhisplayBot",
             }.get(self.cfg.stt_backend, self.cfg.stt_backend)
             await self.send_event(
                 "info",
@@ -520,7 +520,7 @@ class HallidaySession:
                             "attribution": {"name": "Halliday Glasses Add-on"},
                             "installed": True,
                             "languages": [self.cfg.language],
-                            "version": "0.3.0",
+                            "version": "1.0.0",
                         }
                     ]
                 },
@@ -562,7 +562,7 @@ class HallidaySession:
     def build_backend(self):
         if self.cfg.stt_backend == "openai":
             return OpenAIRealtimeBackend(self.cfg, self.send_event)
-        if self.cfg.stt_backend == "whisplay":
+        if self.cfg.stt_backend == "whisplaybot":
             return WhisplayBackend(self.cfg, self.send_event)
         if self.vosk_model is None:
             raise RuntimeError("Vosk backend selected but no model is loaded")
@@ -590,8 +590,8 @@ async def serve(cfg: ServerConfig) -> None:
             cfg.openai_realtime_model,
             cfg.openai_transcription_model,
         )
-    if cfg.stt_backend == "whisplay":
-        LOGGER.info("Whisplay backend enabled with recognize URL %s", cfg.whisplay_recognize_url)
+    if cfg.stt_backend == "whisplaybot":
+        LOGGER.info("WhisplayBot backend enabled with recognize URL %s", cfg.whisplaybot_recognize_url)
 
     async def on_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         session = HallidaySession(reader, writer, cfg, vosk_model)
@@ -640,13 +640,13 @@ def parse_args() -> ServerConfig:
         openai_vad_threshold=args.openai_vad_threshold,
         openai_vad_prefix_padding_ms=args.openai_vad_prefix_padding_ms,
         openai_vad_silence_duration_ms=args.openai_vad_silence_duration_ms,
-        whisplay_recognize_url=args.whisplay_recognize_url,
-        whisplay_timeout_seconds=args.whisplay_timeout_seconds,
-        whisplay_partial_window_seconds=args.whisplay_partial_window_seconds,
-        whisplay_partial_inference_seconds=args.whisplay_partial_inference_seconds,
-        whisplay_auto_final_silence_ms=args.whisplay_auto_final_silence_ms,
-        whisplay_auto_final_min_seconds=args.whisplay_auto_final_min_seconds,
-        whisplay_auto_final_silence_level=args.whisplay_auto_final_silence_level,
+        whisplaybot_recognize_url=args.whisplay_recognize_url,
+        whisplaybot_timeout_seconds=args.whisplay_timeout_seconds,
+        whisplaybot_partial_window_seconds=args.whisplay_partial_window_seconds,
+        whisplaybot_partial_inference_seconds=args.whisplay_partial_inference_seconds,
+        whisplaybot_auto_final_silence_ms=args.whisplay_auto_final_silence_ms,
+        whisplaybot_auto_final_min_seconds=args.whisplay_auto_final_min_seconds,
+        whisplaybot_auto_final_silence_level=args.whisplay_auto_final_silence_level,
     )
 
 
