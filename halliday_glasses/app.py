@@ -6,6 +6,7 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
+from urllib.parse import quote
 import websockets
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
@@ -64,6 +65,7 @@ class ServerConfig:
     model_path: str
     enable_openai_realtime: bool
     openai_api_key: str
+    openai_realtime_model: str
     openai_transcription_model: str
     openai_prompt: str
     openai_vad_threshold: float
@@ -144,7 +146,8 @@ class OpenAIRealtimeBackend:
         if not self.cfg.openai_api_key:
             raise RuntimeError("OpenAI Realtime backend enabled but openai_api_key is empty")
 
-        uri = "wss://api.openai.com/v1/realtime?intent=transcription"
+        realtime_model = quote(self.cfg.openai_realtime_model, safe="")
+        uri = f"wss://api.openai.com/v1/realtime?model={realtime_model}"
         headers = {"Authorization": f"Bearer {self.cfg.openai_api_key}"}
         self.websocket = await websockets.connect(uri, extra_headers=headers, max_size=None)
         self.partial_by_item.clear()
@@ -152,21 +155,31 @@ class OpenAIRealtimeBackend:
         self.receive_task = asyncio.create_task(self.receive_loop())
 
         session_update = {
-            "type": "transcription_session.update",
-            "input_audio_format": "pcm16",
-            "input_audio_transcription": {
-                "model": self.cfg.openai_transcription_model,
-                "prompt": self.cfg.openai_prompt,
-                "language": state.language,
-            },
-            "turn_detection": {
-                "type": "server_vad",
-                "threshold": self.cfg.openai_vad_threshold,
-                "prefix_padding_ms": self.cfg.openai_vad_prefix_padding_ms,
-                "silence_duration_ms": self.cfg.openai_vad_silence_duration_ms,
-            },
-            "input_audio_noise_reduction": {
-                "type": "near_field",
+            "type": "session.update",
+            "session": {
+                "audio": {
+                    "input": {
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": 24000,
+                        },
+                        "noise_reduction": {
+                            "type": "near_field",
+                        },
+                        "transcription": {
+                            "model": self.cfg.openai_transcription_model,
+                            "prompt": self.cfg.openai_prompt,
+                            "language": state.language,
+                        },
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": self.cfg.openai_vad_threshold,
+                            "prefix_padding_ms": self.cfg.openai_vad_prefix_padding_ms,
+                            "silence_duration_ms": self.cfg.openai_vad_silence_duration_ms,
+                        },
+                    }
+                },
+                "include": ["item.input_audio_transcription.logprobs"],
             },
         }
         await self.websocket.send(json.dumps(session_update))
@@ -373,7 +386,8 @@ async def serve(cfg: ServerConfig) -> None:
         LOGGER.info("Vosk model loaded")
     if cfg.enable_openai_realtime:
         LOGGER.info(
-            "OpenAI Realtime backend enabled with transcription model %s",
+            "OpenAI Realtime backend enabled with session model %s and transcription model %s",
+            cfg.openai_realtime_model,
             cfg.openai_transcription_model,
         )
 
@@ -396,6 +410,7 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--model-path", default="/models/vosk-model-small-en-us-0.15")
     parser.add_argument("--enable-openai-realtime", action="store_true")
     parser.add_argument("--openai-api-key", default="")
+    parser.add_argument("--openai-realtime-model", default="gpt-realtime-mini")
     parser.add_argument("--openai-transcription-model", default="gpt-4o-mini-transcribe")
     parser.add_argument("--openai-prompt", default="")
     parser.add_argument("--openai-vad-threshold", type=float, default=0.5)
@@ -410,6 +425,7 @@ def parse_args() -> ServerConfig:
         model_path=args.model_path,
         enable_openai_realtime=args.enable_openai_realtime,
         openai_api_key=args.openai_api_key,
+        openai_realtime_model=args.openai_realtime_model,
         openai_transcription_model=args.openai_transcription_model,
         openai_prompt=args.openai_prompt,
         openai_vad_threshold=args.openai_vad_threshold,
