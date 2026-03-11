@@ -876,15 +876,6 @@ async def serve(cfg: ServerConfig) -> None:
         session = WebSocketSession(websocket, cfg, vosk_model, translator)
         await session.run()
 
-    async def websocket_process_request(path, headers):
-        upgrade = (headers.get("Upgrade") or "").strip().lower()
-        if upgrade == "websocket":
-            return None
-        if path in {"", "/"}:
-            body = b"Halliday Glasses WebSocket bridge. Connect a client to /ws.\n"
-            return HTTPStatus.OK, [("Content-Type", "text/plain; charset=utf-8")], body
-        return None
-
     server = await asyncio.start_server(on_connect, cfg.listen_host, cfg.listen_port)
     websocket_server = await websockets.serve(
         on_websocket_connect,
@@ -893,7 +884,6 @@ async def serve(cfg: ServerConfig) -> None:
         max_size=2**24,
         ping_interval=20,
         ping_timeout=20,
-        process_request=websocket_process_request,
     )
     addresses = ", ".join(str(sock.getsockname()) for sock in (server.sockets or []))
     LOGGER.info("Halliday Glasses server listening on %s", addresses)
