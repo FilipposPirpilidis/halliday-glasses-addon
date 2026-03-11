@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 import websockets
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
@@ -80,6 +81,12 @@ class ServerConfig:
     whisplaybot_auto_final_silence_ms: int
     whisplaybot_auto_final_min_seconds: float
     whisplaybot_auto_final_silence_level: int
+    translate_enabled: bool
+    translate_url: str
+    translate_pairs: tuple[str, ...]
+    translate_source: str
+    translate_target: str
+    translate_timeout_seconds: float
 
 
 @dataclass(slots=True)
@@ -89,16 +96,59 @@ class AudioState:
     channels: int = 1
     language: str = "en"
     chunks: bytearray | None = None
+    translate_enabled: bool = False
+    translate_pairs: tuple[str, ...] = ()
+    translate_source: str = "auto"
+    translate_target: str = ""
 
     def reset(self) -> None:
         self.chunks = bytearray()
 
 
+class Translator:
+    def __init__(self, cfg: ServerConfig):
+        self.cfg = cfg
+
+    async def translate(self, text: str, source: str, target: str) -> str:
+        payload = json.dumps(
+            {
+                "q": text,
+                "source": source,
+                "target": target,
+                "format": "text",
+            }
+        ).encode("utf-8")
+        request = Request(
+            self.cfg.translate_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        def _request() -> str:
+            with urlopen(request, timeout=max(self.cfg.translate_timeout_seconds, 5.0)) as response:
+                body = response.read().decode("utf-8")
+                decoded = json.loads(body)
+                translated = (decoded.get("translatedText") or "").strip()
+                if not translated:
+                    raise RuntimeError(f"Translation response missing translatedText: {body}")
+                return translated
+
+        try:
+            return await asyncio.to_thread(_request)
+        except HTTPError as err:
+            body = err.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"LibreTranslate HTTP {err.code}: {body}") from err
+        except URLError as err:
+            raise RuntimeError(f"LibreTranslate request failed: {err}") from err
+
+
 class VoskBackend:
-    def __init__(self, cfg: ServerConfig, model: Model, send_event):
+    def __init__(self, cfg: ServerConfig, model: Model, emit_partial, emit_final):
         self.cfg = cfg
         self.model = model
-        self.send_event = send_event
+        self.emit_partial = emit_partial
+        self.emit_final = emit_final
         self.recognizer: Optional[KaldiRecognizer] = None
         self.last_partial_text = ""
 
@@ -119,13 +169,13 @@ class VoskBackend:
             text = result_text(recognizer.Result())
             if text:
                 self.last_partial_text = ""
-                await self.send_event("transcript", {"text": text})
+                await self.emit_final(text)
             return
 
         text = result_text(recognizer.PartialResult())
         if text and text != self.last_partial_text:
             self.last_partial_text = text
-            await self.send_event("transcript-chunk", {"text": text})
+            await self.emit_partial(text)
 
     async def finish(self) -> None:
         recognizer = self.recognizer
@@ -134,7 +184,7 @@ class VoskBackend:
 
         text = result_text(recognizer.FinalResult())
         if text:
-            await self.send_event("transcript", {"text": text})
+            await self.emit_final(text)
         self.recognizer = None
 
     async def close(self) -> None:
@@ -142,9 +192,11 @@ class VoskBackend:
 
 
 class OpenAIRealtimeBackend:
-    def __init__(self, cfg: ServerConfig, send_event):
+    def __init__(self, cfg: ServerConfig, emit_partial, emit_final, emit_error):
         self.cfg = cfg
-        self.send_event = send_event
+        self.emit_partial = emit_partial
+        self.emit_final = emit_final
+        self.emit_error = emit_error
         self.websocket = None
         self.receive_task: Optional[asyncio.Task] = None
         self.partial_by_item: dict[str, str] = {}
@@ -249,26 +301,26 @@ class OpenAIRealtimeBackend:
                         continue
                     updated = f"{self.partial_by_item.get(item_id, '')}{delta}"
                     self.partial_by_item[item_id] = updated
-                    await self.send_event("transcript-chunk", {"text": updated})
+                    await self.emit_partial(updated)
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     item_id = event.get("item_id", "")
                     transcript = (event.get("transcript") or "").strip()
                     if item_id:
                         self.partial_by_item.pop(item_id, None)
                     if transcript:
-                        await self.send_event("transcript", {"text": transcript})
+                        await self.emit_final(transcript)
                 elif event_type == "error":
                     message_text = (
                         (event.get("error") or {}).get("message")
                         or event.get("message")
                         or "OpenAI Realtime transcription error"
                     )
-                    await self.send_event("error", {"message": message_text})
+                    await self.emit_error(message_text)
         except asyncio.CancelledError:
             raise
         except Exception as err:
             LOGGER.exception("OpenAI Realtime receive loop failed")
-            await self.send_event("error", {"message": str(err)})
+            await self.emit_error(str(err))
 
     def resample_to_24k(self, payload: bytes, state: AudioState) -> bytes:
         if state.rate == 24000:
@@ -286,9 +338,10 @@ class OpenAIRealtimeBackend:
 
 
 class WhisplayBackend:
-    def __init__(self, cfg: ServerConfig, send_event):
+    def __init__(self, cfg: ServerConfig, emit_partial, emit_final):
         self.cfg = cfg
-        self.send_event = send_event
+        self.emit_partial = emit_partial
+        self.emit_final = emit_final
         self.raw_pcm = bytearray()
         self.bytes_transcribed_for_partial = 0
         self.last_partial_text = ""
@@ -318,12 +371,12 @@ class WhisplayBackend:
 
         partial = await self.maybe_partial(state)
         if partial:
-            await self.send_event("transcript-chunk", {"text": partial})
+            await self.emit_partial(partial)
 
         if self.should_auto_finalize(state):
             final_text = await self.finalize(state)
             if final_text:
-                await self.send_event("transcript", {"text": final_text})
+                await self.emit_final(final_text)
             self.reset_stream_state()
 
     async def finish(self) -> None:
@@ -475,12 +528,18 @@ class HallidaySession:
         writer: asyncio.StreamWriter,
         cfg: ServerConfig,
         vosk_model: Optional[Model],
+        translator: Translator,
     ):
         self.reader = reader
         self.writer = writer
         self.cfg = cfg
         self.vosk_model = vosk_model
+        self.translator = translator
         self.state = AudioState(language=cfg.language)
+        self.state.translate_enabled = cfg.translate_enabled
+        self.state.translate_pairs = cfg.translate_pairs
+        self.state.translate_source = cfg.translate_source
+        self.state.translate_target = cfg.translate_target
         self._closed = False
         self.backend = None
 
@@ -522,7 +581,14 @@ class HallidaySession:
                             "languages": [self.cfg.language],
                             "version": "1.0.0",
                         }
-                    ]
+                    ],
+                    "translation": {
+                        "enabled": self.state.translate_enabled,
+                        "pairs": list(self.state.translate_pairs),
+                        "pair": self.current_translation_pair(),
+                        "source": self.state.translate_source,
+                        "target": self.state.translate_target,
+                    },
                 },
             )
             return
@@ -531,6 +597,34 @@ class HallidaySession:
             language = (data.get("language") or "").strip()
             if language:
                 self.state.language = language
+            return
+
+        if event_type == "translate-get":
+            await self.send_translation_config()
+            return
+
+        if event_type == "translate-set":
+            enabled = data.get("enabled")
+            pair = (data.get("pair") or "").strip()
+            source = (data.get("source") or "").strip()
+            target = (data.get("target") or "").strip()
+            if enabled is not None:
+                self.state.translate_enabled = bool(enabled)
+            if pair:
+                if not self.is_translation_pair_allowed(pair):
+                    await self.emit_error_text(f"Translation pair '{pair}' is not allowed")
+                    await self.send_translation_config()
+                    return
+                source, target = split_translation_pair(pair)
+            elif source and target and not self.is_translation_pair_allowed(f"{source}-{target}"):
+                await self.emit_error_text(f"Translation pair '{source}-{target}' is not allowed")
+                await self.send_translation_config()
+                return
+            if source:
+                self.state.translate_source = source
+            if target:
+                self.state.translate_target = target
+            await self.send_translation_config()
             return
 
         if event_type == "audio-start":
@@ -561,12 +655,12 @@ class HallidaySession:
 
     def build_backend(self):
         if self.cfg.stt_backend == "openai":
-            return OpenAIRealtimeBackend(self.cfg, self.send_event)
+            return OpenAIRealtimeBackend(self.cfg, self.emit_partial_text, self.emit_final_text, self.emit_error_text)
         if self.cfg.stt_backend == "whisplaybot":
-            return WhisplayBackend(self.cfg, self.send_event)
+            return WhisplayBackend(self.cfg, self.emit_partial_text, self.emit_final_text)
         if self.vosk_model is None:
             raise RuntimeError("Vosk backend selected but no model is loaded")
-        return VoskBackend(self.cfg, self.vosk_model, self.send_event)
+        return VoskBackend(self.cfg, self.vosk_model, self.emit_partial_text, self.emit_final_text)
 
     async def close_backend(self) -> None:
         if self.backend is not None:
@@ -577,9 +671,111 @@ class HallidaySession:
         self.writer.write(event_bytes(event_type, data, payload))
         await self.writer.drain()
 
+    async def emit_partial_text(self, text: str) -> None:
+        text = text.strip()
+        if text:
+            await self.send_event("transcript-chunk", {"text": text})
+
+    async def emit_final_text(self, text: str) -> None:
+        text = text.strip()
+        if not text:
+            return
+
+        if not self.state.translate_enabled or not self.state.translate_target:
+            await self.send_event("transcript", {"text": text})
+            return
+
+        try:
+            translated = await self.translator.translate(
+                text,
+                self.state.translate_source or "auto",
+                self.state.translate_target,
+            )
+            await self.send_event(
+                "transcript",
+                {
+                    "text": translated,
+                    "original_text": text,
+                    "translated": True,
+                    "source_language": self.state.translate_source or "auto",
+                    "target_language": self.state.translate_target,
+                },
+            )
+        except Exception as err:
+            LOGGER.exception("Translation failed")
+            await self.send_event(
+                "transcript",
+                {
+                    "text": text,
+                    "translation_error": str(err),
+                    "translated": False,
+                },
+            )
+
+    async def emit_error_text(self, message: str) -> None:
+        await self.send_event("error", {"message": message})
+
+    async def send_translation_config(self) -> None:
+        await self.send_event(
+            "translate-config",
+            {
+                "enabled": self.state.translate_enabled,
+                "pairs": list(self.state.translate_pairs),
+                "pair": self.current_translation_pair(),
+                "source": self.state.translate_source,
+                "target": self.state.translate_target,
+            },
+        )
+
+    def current_translation_pair(self) -> str:
+        source = (self.state.translate_source or "").strip()
+        target = (self.state.translate_target or "").strip()
+        if not source or not target:
+            return ""
+        return f"{source}-{target}"
+
+    def is_translation_pair_allowed(self, pair: str) -> bool:
+        allowed = self.state.translate_pairs
+        if not allowed:
+            return True
+        source, target = split_translation_pair(pair)
+        if not source or not target:
+            return False
+        return f"{source}-{target}" in allowed
+
+
+def split_translation_pair(pair: str) -> tuple[str, str]:
+    normalized = pair.strip().replace("->", "-").replace("_", "-")
+    source, _, target = normalized.partition("-")
+    return source.strip(), target.strip()
+
+
+def parse_translation_pairs(raw_value: str) -> tuple[str, ...]:
+    raw_value = (raw_value or "").strip()
+    if not raw_value:
+        return ()
+
+    values: list[str]
+    if raw_value.startswith("["):
+        try:
+            decoded = json.loads(raw_value)
+        except json.JSONDecodeError:
+            decoded = []
+        values = [str(item).strip() for item in decoded if str(item).strip()]
+    else:
+        values = [item.strip() for item in raw_value.split(",") if item.strip()]
+
+    pairs: list[str] = []
+    for value in values:
+        source, target = split_translation_pair(value)
+        if source and target:
+            pairs.append(f"{source}-{target}")
+    return tuple(dict.fromkeys(pairs))
+
 
 async def serve(cfg: ServerConfig) -> None:
     vosk_model = None
+    translator = Translator(cfg)
     if cfg.stt_backend == "vosk":
         LOGGER.info("Loading Vosk model from %s", cfg.model_path)
         vosk_model = Model(cfg.model_path)
@@ -594,7 +790,7 @@ async def serve(cfg: ServerConfig) -> None:
         LOGGER.info("WhisplayBot backend enabled with recognize URL %s", cfg.whisplaybot_recognize_url)
 
     async def on_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        session = HallidaySession(reader, writer, cfg, vosk_model)
+        session = HallidaySession(reader, writer, cfg, vosk_model, translator)
         await session.run()
 
     server = await asyncio.start_server(on_connect, cfg.listen_host, cfg.listen_port)
@@ -625,7 +821,22 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--whisplay-auto-final-silence-ms", type=int, default=900)
     parser.add_argument("--whisplay-auto-final-min-seconds", type=float, default=0.8)
     parser.add_argument("--whisplay-auto-final-silence-level", type=int, default=700)
+    parser.add_argument("--translate-enabled", action="store_true")
+    parser.add_argument("--translate-url", default="http://homeassistant.local:5000/translate")
+    parser.add_argument("--translate-pairs", default='["en-el","el-en","en-de","de-en","en-fr","fr-en"]')
+    parser.add_argument("--translate-source", default="auto")
+    parser.add_argument("--translate-target", default="")
+    parser.add_argument("--translate-timeout-seconds", type=float, default=30.0)
     args = parser.parse_args()
+    translate_pairs = parse_translation_pairs(args.translate_pairs)
+    translate_source = args.translate_source
+    translate_target = args.translate_target
+    if not translate_target and translate_pairs:
+        translate_source, translate_target = split_translation_pair(translate_pairs[0])
+    if translate_target and translate_pairs:
+        current_pair = f"{translate_source}-{translate_target}"
+        if current_pair not in translate_pairs:
+            translate_source, translate_target = split_translation_pair(translate_pairs[0])
 
     return ServerConfig(
         listen_host=args.listen_host,
@@ -647,6 +858,12 @@ def parse_args() -> ServerConfig:
         whisplaybot_auto_final_silence_ms=args.whisplay_auto_final_silence_ms,
         whisplaybot_auto_final_min_seconds=args.whisplay_auto_final_min_seconds,
         whisplaybot_auto_final_silence_level=args.whisplay_auto_final_silence_level,
+        translate_enabled=args.translate_enabled,
+        translate_url=args.translate_url,
+        translate_pairs=translate_pairs,
+        translate_source=translate_source,
+        translate_target=translate_target,
+        translate_timeout_seconds=args.translate_timeout_seconds,
     )
 
 

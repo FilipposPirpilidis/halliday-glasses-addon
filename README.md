@@ -17,6 +17,17 @@ Set `stt_backend` to exactly one of these:
 - `language`: language hint, default `en`
 - `stt_backend`: `vosk`, `openai`, or `whisplaybot`
 
+## Translation Options
+
+- `translate_enabled`: enable final-text translation after STT
+- `translate_url`: LibreTranslate `/translate` endpoint
+- `translate_pairs`: allowed source-target pairs such as `en-el` and `el-en`
+- `translate_source`: default source language
+- `translate_target`: default target language
+- `translate_timeout_seconds`: HTTP timeout for translation requests
+
+When translation is enabled, the add-on keeps sending the final result as a normal Wyoming `transcript` event, but `text` becomes the translated string. The original STT text is included as `original_text`.
+
 ## Vosk Options
 
 - `model_variant`: `0.15` or `zamia`
@@ -48,3 +59,16 @@ For the LM8850 prebuilt image, see:
 - `stt_backend` selects one backend only.
 - When `stt_backend: openai`, the add-on resamples PCM16 mono audio to `24 kHz` before sending it to OpenAI Realtime.
 - When `stt_backend: whisplaybot`, the add-on talks directly to the Pi `recognize` HTTP API and generates live partial/final captions itself.
+- Translation is applied only to final text, not to partial captions.
+- A client can change translation settings at runtime without opening the Home Assistant configuration page:
+  - send `translate-get` to receive the current pair and available pairs
+  - send `translate-set` with `enabled`, `pair`, or explicit `source` and `target`
+
+Example `translate-set` event data:
+
+```json
+{
+  "enabled": true,
+  "pair": "en-el"
+}
+```

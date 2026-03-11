@@ -17,6 +17,9 @@ struct CLIOptions {
     var port: Int = 10310
     var language: String = "en"
     var haToken: String? = ProcessInfo.processInfo.environment["HA_TOKEN"]
+    var translateEnabled: Bool?
+    var translateSource: String?
+    var translateTarget: String?
 
     static func parse(from args: [String]) throws -> CLIOptions {
         var options = CLIOptions()
@@ -42,6 +45,19 @@ struct CLIOptions {
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--ha-token") }
                 options.haToken = args[index]
+            case "--translate-enabled":
+                index += 1
+                guard index < args.count else { throw CLIError.missingValue("--translate-enabled") }
+                guard let enabled = parseBool(args[index]) else { throw CLIError.invalidValue("--translate-enabled") }
+                options.translateEnabled = enabled
+            case "--translate-source":
+                index += 1
+                guard index < args.count else { throw CLIError.missingValue("--translate-source") }
+                options.translateSource = args[index]
+            case "--translate-target":
+                index += 1
+                guard index < args.count else { throw CLIError.missingValue("--translate-target") }
+                options.translateTarget = args[index]
             case "-h", "--help":
                 printUsageAndExit()
             default:
@@ -51,6 +67,17 @@ struct CLIOptions {
         }
 
         return options
+    }
+}
+
+func parseBool(_ value: String) -> Bool? {
+    switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "1", "true", "yes", "y", "on":
+        return true
+    case "0", "false", "no", "n", "off":
+        return false
+    default:
+        return nil
     }
 }
 
@@ -104,6 +131,14 @@ enum AppError: Error, CustomStringConvertible {
             return "Host cannot be empty"
         }
     }
+}
+
+struct TranslationConfig {
+    let enabled: Bool
+    let source: String
+    let target: String
+    let pair: String
+    let pairs: [String]
 }
 
 final class ConverterInputState: @unchecked Sendable {
@@ -408,7 +443,8 @@ func writeAll(stream: OutputStream, data: Data) throws {
 
 final class WyomingStreamingClient: @unchecked Sendable {
     var onPartialTranscript: ((String) -> Void)?
-    var onFinalTranscript: ((String) -> Void)?
+    var onFinalTranscript: ((String, String?, Bool) -> Void)?
+    var onTranslationConfig: ((TranslationConfig) -> Void)?
     var onError: ((Error) -> Void)?
 
     private let host: String
@@ -488,6 +524,38 @@ final class WyomingStreamingClient: @unchecked Sendable {
         }
     }
 
+    func requestTranslationConfig() {
+        writeQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                try self.send(eventType: "translate-get", data: [:])
+            } catch {
+                self.fail(error)
+            }
+        }
+    }
+
+    func updateTranslationConfig(enabled: Bool? = nil, source: String? = nil, target: String? = nil) {
+        writeQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                var data: [String: Any] = [:]
+                if let enabled {
+                    data["enabled"] = enabled
+                }
+                if let source, !source.isEmpty {
+                    data["source"] = source
+                }
+                if let target, !target.isEmpty {
+                    data["target"] = target
+                }
+                try self.send(eventType: "translate-set", data: data)
+            } catch {
+                self.fail(error)
+            }
+        }
+    }
+
     func cancel() {
         close()
     }
@@ -518,7 +586,18 @@ final class WyomingStreamingClient: @unchecked Sendable {
                 if type == "transcript-chunk", !text.isEmpty {
                     onPartialTranscript?(text)
                 } else if type == "transcript" {
-                    onFinalTranscript?(text)
+                    let originalText = (data["original_text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let translated = (data["translated"] as? Bool) ?? false
+                    onFinalTranscript?(text, originalText, translated)
+                } else if type == "translate-config" {
+                    let config = TranslationConfig(
+                        enabled: (data["enabled"] as? Bool) ?? false,
+                        source: (data["source"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                        target: (data["target"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                        pair: (data["pair"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                        pairs: data["pairs"] as? [String] ?? []
+                    )
+                    onTranslationConfig?(config)
                 } else if type == "error" {
                     let message = (data["message"] as? String ?? "Unknown Wyoming error").trimmingCharacters(in: .whitespacesAndNewlines)
                     throw NSError(domain: "HallidayMicStreamer", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
@@ -581,7 +660,7 @@ func requestMicrophonePermission() -> Bool {
 }
 
 func printUsageAndExit() -> Never {
-    print("Usage: halliday-mic-streamer [--host HOST] [--port PORT] [--language LANG] [--ha-token TOKEN]")
+    print("Usage: halliday-mic-streamer [--host HOST] [--port PORT] [--language LANG] [--ha-token TOKEN] [--translate-enabled true|false] [--translate-source LANG] [--translate-target LANG]")
     print("  Default target: homeassistant.local:10310")
     print("  HA_TOKEN is optional and not used for direct Wyoming TCP streaming.")
     exit(0)
@@ -610,6 +689,12 @@ struct HallidayMicStreamer {
             if let token = options.haToken, !token.isEmpty {
                 print("Home Assistant token detected but not used for direct Wyoming transport.")
             }
+            if let translateEnabled = options.translateEnabled {
+                print("Requested translation: \(translateEnabled ? "enabled" : "disabled")")
+            }
+            if let translateSource = options.translateSource, let translateTarget = options.translateTarget {
+                print("Requested translation pair: \(translateSource)-\(translateTarget)")
+            }
 
             let streamingClient = WyomingStreamingClient(
                 host: options.host,
@@ -622,8 +707,19 @@ struct HallidayMicStreamer {
                 print("[partial] \(text)")
             }
 
-            streamingClient.onFinalTranscript = { text in
-                print("[stt] \(text.isEmpty ? "(no text)" : text)")
+            streamingClient.onFinalTranscript = { text, originalText, translated in
+                if translated, let originalText, !originalText.isEmpty {
+                    print("[stt] \(text.isEmpty ? "(no text)" : text)")
+                    print("[orig] \(originalText)")
+                } else {
+                    print("[stt] \(text.isEmpty ? "(no text)" : text)")
+                }
+            }
+
+            streamingClient.onTranslationConfig = { config in
+                let pair = config.pair.isEmpty ? "\(config.source)-\(config.target)" : config.pair
+                let pairs = config.pairs.isEmpty ? "(any)" : config.pairs.joined(separator: ", ")
+                print("[translate] \(config.enabled ? "on" : "off") pair=\(pair) allowed=\(pairs)")
             }
 
             streamingClient.onError = { error in
@@ -636,6 +732,15 @@ struct HallidayMicStreamer {
             try streamingClient.start()
             stateQueue.sync {
                 client = streamingClient
+            }
+            streamingClient.requestTranslationConfig()
+            let requestedEnabled = options.translateEnabled ?? ((options.translateSource != nil || options.translateTarget != nil) ? true : nil)
+            if requestedEnabled != nil || options.translateSource != nil || options.translateTarget != nil {
+                streamingClient.updateTranslationConfig(
+                    enabled: requestedEnabled,
+                    source: options.translateSource,
+                    target: options.translateTarget
+                )
             }
             print("[rec] LIVE")
             recorder.start { chunk in

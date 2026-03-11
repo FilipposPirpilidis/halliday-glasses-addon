@@ -18,6 +18,12 @@ WHISPLAYBOT_PARTIAL_INFERENCE_SECONDS="$(bashio::config 'whisplaybot_partial_inf
 WHISPLAYBOT_AUTO_FINAL_SILENCE_MS="$(bashio::config 'whisplaybot_auto_final_silence_ms')"
 WHISPLAYBOT_AUTO_FINAL_MIN_SECONDS="$(bashio::config 'whisplaybot_auto_final_min_seconds')"
 WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL="$(bashio::config 'whisplaybot_auto_final_silence_level')"
+TRANSLATE_ENABLED="$(bashio::config 'translate_enabled')"
+TRANSLATE_URL="$(bashio::config 'translate_url')"
+TRANSLATE_PAIRS="$(bashio::config 'translate_pairs')"
+TRANSLATE_SOURCE="$(bashio::config 'translate_source')"
+TRANSLATE_TARGET="$(bashio::config 'translate_target')"
+TRANSLATE_TIMEOUT_SECONDS="$(bashio::config 'translate_timeout_seconds')"
 
 case "${MODEL_VARIANT}" in
   "0.15")
@@ -41,6 +47,24 @@ fi
 bashio::log.info "Starting Halliday Glasses add-on"
 bashio::log.info "Listening on ${SERVER_HOST}:${SERVER_PORT}"
 bashio::log.info "Using STT backend ${STT_BACKEND}"
+if bashio::var.true "${TRANSLATE_ENABLED}"; then
+  bashio::log.info "Translation enabled via ${TRANSLATE_URL}"
+  bashio::log.info "Selected translation pair ${TRANSLATE_SOURCE}-${TRANSLATE_TARGET}"
+else
+  bashio::log.info "Translation disabled"
+fi
+
+TRANSLATE_ARGS=(
+  --translate-url "${TRANSLATE_URL}"
+  --translate-pairs "${TRANSLATE_PAIRS}"
+  --translate-source "${TRANSLATE_SOURCE}"
+  --translate-target "${TRANSLATE_TARGET}"
+  --translate-timeout-seconds "${TRANSLATE_TIMEOUT_SECONDS}"
+)
+
+if bashio::var.true "${TRANSLATE_ENABLED}"; then
+  TRANSLATE_ARGS+=(--translate-enabled)
+fi
 
 if [ "${STT_BACKEND}" = "openai" ]; then
   bashio::log.info "OpenAI backend enabled"
@@ -55,7 +79,8 @@ if [ "${STT_BACKEND}" = "openai" ]; then
     --openai-api-key "${OPENAI_API_KEY}" \
     --openai-realtime-model "${OPENAI_REALTIME_MODEL}" \
     --openai-transcription-model "${OPENAI_TRANSCRIPTION_MODEL}" \
-    --openai-prompt "${OPENAI_PROMPT}"
+    --openai-prompt "${OPENAI_PROMPT}" \
+    "${TRANSLATE_ARGS[@]}"
 elif [ "${STT_BACKEND}" = "whisplaybot" ]; then
   bashio::log.info "WhisplayBot backend enabled"
   bashio::log.info "WhisplayBot recognize URL ${WHISPLAYBOT_RECOGNIZE_URL}"
@@ -71,7 +96,8 @@ elif [ "${STT_BACKEND}" = "whisplaybot" ]; then
     --whisplay-partial-inference-seconds "${WHISPLAYBOT_PARTIAL_INFERENCE_SECONDS}" \
     --whisplay-auto-final-silence-ms "${WHISPLAYBOT_AUTO_FINAL_SILENCE_MS}" \
     --whisplay-auto-final-min-seconds "${WHISPLAYBOT_AUTO_FINAL_MIN_SECONDS}" \
-    --whisplay-auto-final-silence-level "${WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL}"
+    --whisplay-auto-final-silence-level "${WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL}" \
+    "${TRANSLATE_ARGS[@]}"
 else
   bashio::log.info "Using Vosk backend"
   bashio::log.info "Using Vosk model variant ${MODEL_VARIANT}"
@@ -81,5 +107,6 @@ else
     --listen-port "${SERVER_PORT}" \
     --language "${LANGUAGE}" \
     --stt-backend "vosk" \
-    --model-path "${RESOLVED_MODEL_PATH}"
+    --model-path "${RESOLVED_MODEL_PATH}" \
+    "${TRANSLATE_ARGS[@]}"
 fi
