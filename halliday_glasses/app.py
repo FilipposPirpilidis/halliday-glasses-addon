@@ -6,8 +6,6 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
-from urllib.parse import quote
-
 import websockets
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
@@ -146,8 +144,7 @@ class OpenAIRealtimeBackend:
         if not self.cfg.openai_api_key:
             raise RuntimeError("OpenAI Realtime backend enabled but openai_api_key is empty")
 
-        model = quote(self.cfg.openai_transcription_model, safe="")
-        uri = f"wss://api.openai.com/v1/realtime?model={model}"
+        uri = "wss://api.openai.com/v1/realtime?intent=transcription"
         headers = {"Authorization": f"Bearer {self.cfg.openai_api_key}"}
         self.websocket = await websockets.connect(uri, extra_headers=headers, max_size=None)
         self.partial_by_item.clear()
@@ -155,30 +152,21 @@ class OpenAIRealtimeBackend:
         self.receive_task = asyncio.create_task(self.receive_loop())
 
         session_update = {
-            "type": "session.update",
-            "session": {
-                "audio": {
-                    "input": {
-                        "format": {
-                            "type": "audio/pcm",
-                            "rate": 24000,
-                        },
-                        "noise_reduction": {
-                            "type": "near_field",
-                        },
-                        "transcription": {
-                            "model": self.cfg.openai_transcription_model,
-                            "prompt": self.cfg.openai_prompt,
-                            "language": state.language,
-                        },
-                        "turn_detection": {
-                            "type": "server_vad",
-                            "threshold": self.cfg.openai_vad_threshold,
-                            "prefix_padding_ms": self.cfg.openai_vad_prefix_padding_ms,
-                            "silence_duration_ms": self.cfg.openai_vad_silence_duration_ms,
-                        },
-                    }
-                },
+            "type": "transcription_session.update",
+            "input_audio_format": "pcm16",
+            "input_audio_transcription": {
+                "model": self.cfg.openai_transcription_model,
+                "prompt": self.cfg.openai_prompt,
+                "language": state.language,
+            },
+            "turn_detection": {
+                "type": "server_vad",
+                "threshold": self.cfg.openai_vad_threshold,
+                "prefix_padding_ms": self.cfg.openai_vad_prefix_padding_ms,
+                "silence_duration_ms": self.cfg.openai_vad_silence_duration_ms,
+            },
+            "input_audio_noise_reduction": {
+                "type": "near_field",
             },
         }
         await self.websocket.send(json.dumps(session_update))
