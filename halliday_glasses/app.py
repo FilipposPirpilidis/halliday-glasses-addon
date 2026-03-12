@@ -928,10 +928,13 @@ class HallidaySession:
         await self._emit_transcript_result(text)
 
     async def _emit_whisplay_agent_result(self, text: str) -> None:
+        original_text = text
         try:
+            LOGGER.info("Whisplay agent request: %s", original_text)
             cleaned = normalize_cleanup_text(await self.cleaner.clean_text(text))
             if cleaned and not should_drop_transcript_text(cleaned):
                 text = cleaned
+            LOGGER.info("Whisplay agent response: %s", text)
         except asyncio.CancelledError:
             raise
         except Exception:
