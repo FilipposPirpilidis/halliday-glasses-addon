@@ -34,6 +34,8 @@ options:
   openai_transcription_model: "gpt-4o-mini-transcribe"
   openai_translation_model: "gpt-4.1-nano"
   openai_prompt: ""
+  assemblyai_api_key: ""
+  assemblyai_speech_model: "universal-streaming-english"
   whisplaybot_recognize_url: "http://192.168.2.29:8801/recognize"
   whisplaybot_timeout_seconds: 60
   whisplaybot_partial_window_seconds: 1
@@ -67,6 +69,8 @@ schema:
   openai_transcription_model: str
   openai_translation_model: str
   openai_prompt: str
+  assemblyai_api_key: str
+  assemblyai_speech_model: str
   whisplaybot_recognize_url: str
   whisplaybot_timeout_seconds: int
   whisplaybot_partial_window_seconds: int

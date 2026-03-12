@@ -8,6 +8,7 @@ Set `stt_backend` to exactly one of these:
 
 - `vosk`: bundled offline recognition inside the add-on
 - `openai`: OpenAI Realtime transcription
+- `assemblyai`: AssemblyAI streaming transcription
 - `whisplaybot`: Raspberry Pi WhisplayBot/Faster-Whisper recognizer
 
 ## Main Options
@@ -16,7 +17,7 @@ Set `stt_backend` to exactly one of these:
 - `server_port`: internal Wyoming bridge port, default `10310`
 - `accepted_audio_codecs`: supported client codecs, default `pcm16` and `opus`
 - `language`: language hint, default `en`
-- `stt_backend`: `vosk`, `openai`, or `whisplaybot`
+- `stt_backend`: `vosk`, `openai`, `assemblyai`, or `whisplaybot`
 
 ## Home Assistant Integration
 
@@ -85,6 +86,11 @@ If `translate_url` stays on `127.0.0.1`, the add-on starts LibreTranslate inside
 - `openai_transcription_model`: transcription model, default `gpt-4o-mini-transcribe`
 - `openai_translation_model`: translation model used when `stt_backend: openai` and translation is enabled, default `gpt-4.1-nano`
 - `openai_prompt`: optional prompt
+
+## AssemblyAI Options
+
+- `assemblyai_api_key`: AssemblyAI API key
+- `assemblyai_speech_model`: default `universal-streaming-english`
 
 ## WhisplayBot Options
 

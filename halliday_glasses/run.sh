@@ -15,6 +15,8 @@ OPENAI_REALTIME_MODEL="$(bashio::config 'openai_realtime_model')"
 OPENAI_TRANSCRIPTION_MODEL="$(bashio::config 'openai_transcription_model')"
 OPENAI_TRANSLATION_MODEL="$(bashio::config 'openai_translation_model')"
 OPENAI_PROMPT="$(bashio::config 'openai_prompt')"
+ASSEMBLYAI_API_KEY="$(bashio::config 'assemblyai_api_key')"
+ASSEMBLYAI_SPEECH_MODEL="$(bashio::config 'assemblyai_speech_model')"
 WHISPLAYBOT_RECOGNIZE_URL="$(bashio::config 'whisplaybot_recognize_url')"
 WHISPLAYBOT_TIMEOUT_SECONDS="$(bashio::config 'whisplaybot_timeout_seconds')"
 WHISPLAYBOT_PARTIAL_WINDOW_SECONDS="$(bashio::config 'whisplaybot_partial_window_seconds')"
@@ -208,6 +210,21 @@ elif [ "${STT_BACKEND}" = "whisplaybot" ]; then
     --whisplay-auto-final-silence-ms "${WHISPLAYBOT_AUTO_FINAL_SILENCE_MS}" \
     --whisplay-auto-final-min-seconds "${WHISPLAYBOT_AUTO_FINAL_MIN_SECONDS}" \
     --whisplay-auto-final-silence-level "${WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL}" \
+    "${TRANSLATE_ARGS[@]}"
+elif [ "${STT_BACKEND}" = "assemblyai" ]; then
+  bashio::log.info "AssemblyAI backend enabled"
+  bashio::log.info "AssemblyAI speech model ${ASSEMBLYAI_SPEECH_MODEL}"
+  exec python3 /app.py \
+    --listen-host "${SERVER_HOST}" \
+    --listen-port "${SERVER_PORT}" \
+    --websocket-host "${WEBSOCKET_HOST}" \
+    --websocket-port "${WEBSOCKET_PORT}" \
+    --accepted-audio-codecs "${ACCEPTED_AUDIO_CODECS}" \
+    --language "${LANGUAGE}" \
+    --stt-backend "${STT_BACKEND}" \
+    --model-path "${RESOLVED_MODEL_PATH}" \
+    --assemblyai-api-key "${ASSEMBLYAI_API_KEY}" \
+    --assemblyai-speech-model "${ASSEMBLYAI_SPEECH_MODEL}" \
     "${TRANSLATE_ARGS[@]}"
 else
   bashio::log.info "Using Vosk backend"

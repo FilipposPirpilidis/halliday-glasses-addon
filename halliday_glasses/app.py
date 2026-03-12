@@ -124,6 +124,8 @@ class ServerConfig:
     openai_transcription_model: str
     openai_translation_model: str
     openai_prompt: str
+    assemblyai_api_key: str
+    assemblyai_speech_model: str
     whisplaybot_recognize_url: str
     whisplaybot_timeout_seconds: float
     whisplaybot_partial_window_seconds: float
@@ -481,6 +483,100 @@ class OpenAIRealtimeBackend:
         return converted
 
 
+class AssemblyAIBackend:
+    def __init__(self, cfg: ServerConfig, emit_partial, emit_final, emit_error):
+        self.cfg = cfg
+        self.emit_partial = emit_partial
+        self.emit_final = emit_final
+        self.emit_error = emit_error
+        self.websocket = None
+        self.receive_task: Optional[asyncio.Task] = None
+        self.last_partial_text = ""
+
+    async def start(self, state: AudioState) -> None:
+        if state.width != 2 or state.channels != 1:
+            raise RuntimeError("AssemblyAI backend expects PCM16 mono audio")
+        if not self.cfg.assemblyai_api_key:
+            raise RuntimeError("AssemblyAI backend selected but assemblyai_api_key is empty")
+
+        speech_model = quote(self.cfg.assemblyai_speech_model or "universal-streaming-english", safe="")
+        uri = (
+            "wss://streaming.assemblyai.com/v3/ws"
+            f"?sample_rate={int(state.rate)}"
+            "&encoding=pcm_s16le"
+            f"&speech_model={speech_model}"
+            "&format_turns=false"
+        )
+        headers = {"Authorization": self.cfg.assemblyai_api_key}
+        self.websocket = await websockets.connect(uri, extra_headers=headers, max_size=None)
+        self.last_partial_text = ""
+        self.receive_task = asyncio.create_task(self.receive_loop())
+
+    async def process_chunk(self, payload: bytes, _state: AudioState) -> None:
+        if self.websocket is None or not payload:
+            return
+        await self.websocket.send(payload)
+
+    async def finish(self) -> None:
+        if self.websocket is None:
+            return
+        try:
+            await self.websocket.send(json.dumps({"type": "ForceEndpoint"}))
+            await asyncio.sleep(0.2)
+            await self.websocket.send(json.dumps({"type": "Terminate"}))
+            await asyncio.sleep(0.2)
+        except Exception:
+            pass
+
+    async def close(self) -> None:
+        if self.receive_task is not None:
+            self.receive_task.cancel()
+            try:
+                await self.receive_task
+            except asyncio.CancelledError:
+                pass
+            self.receive_task = None
+
+        if self.websocket is not None:
+            await self.websocket.close()
+            self.websocket = None
+
+        self.last_partial_text = ""
+
+    async def receive_loop(self) -> None:
+        websocket = self.websocket
+        if websocket is None:
+            return
+
+        try:
+            async for message in websocket:
+                if isinstance(message, bytes):
+                    continue
+                event = json.loads(message)
+                event_type = str(event.get("type") or "")
+                if event_type in {"Begin", "Termination", "SpeechStarted"}:
+                    continue
+                if event_type in {"Error", "error"}:
+                    await self.emit_error((event.get("message") or event.get("detail") or "AssemblyAI streaming error").strip())
+                    continue
+
+                transcript = (event.get("transcript") or "").strip()
+                if not transcript:
+                    continue
+
+                if bool(event.get("end_of_turn")):
+                    self.last_partial_text = ""
+                    await self.emit_final(transcript)
+                elif transcript != self.last_partial_text:
+                    self.last_partial_text = transcript
+                    await self.emit_partial(transcript)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            LOGGER.exception("AssemblyAI receive loop failed")
+            await self.emit_error(str(err))
+
+
 class WhisplayBackend:
     def __init__(self, cfg: ServerConfig, emit_partial, emit_final):
         self.cfg = cfg
@@ -809,6 +905,8 @@ class HallidaySession:
     def build_backend(self):
         if self.cfg.stt_backend == "openai":
             return OpenAIRealtimeBackend(self.cfg, self.emit_partial_text, self.emit_final_text, self.emit_error_text)
+        if self.cfg.stt_backend == "assemblyai":
+            return AssemblyAIBackend(self.cfg, self.emit_partial_text, self.emit_final_text, self.emit_error_text)
         if self.cfg.stt_backend == "whisplaybot":
             return WhisplayBackend(self.cfg, self.emit_partial_text, self.emit_final_text)
         if self.vosk_model is None:
@@ -1148,6 +1246,11 @@ async def serve(cfg: ServerConfig) -> None:
             cfg.openai_realtime_model,
             cfg.openai_transcription_model,
         )
+    if cfg.stt_backend == "assemblyai":
+        LOGGER.info(
+            "AssemblyAI backend enabled with speech model %s",
+            cfg.assemblyai_speech_model,
+        )
     if cfg.stt_backend == "whisplaybot":
         LOGGER.info("WhisplayBot backend enabled with recognize URL %s", cfg.whisplaybot_recognize_url)
 
@@ -1194,6 +1297,8 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--openai-transcription-model", default="gpt-4o-mini-transcribe")
     parser.add_argument("--openai-translation-model", default="gpt-4.1-nano")
     parser.add_argument("--openai-prompt", default="")
+    parser.add_argument("--assemblyai-api-key", default="")
+    parser.add_argument("--assemblyai-speech-model", default="universal-streaming-english")
     parser.add_argument("--whisplay-recognize-url", default="http://192.168.2.29:8801/recognize")
     parser.add_argument("--whisplay-timeout-seconds", type=float, default=60.0)
     parser.add_argument("--whisplay-partial-window-seconds", type=float, default=2.0)
@@ -1233,6 +1338,8 @@ def parse_args() -> ServerConfig:
         openai_transcription_model=args.openai_transcription_model,
         openai_translation_model=args.openai_translation_model,
         openai_prompt=args.openai_prompt,
+        assemblyai_api_key=args.assemblyai_api_key,
+        assemblyai_speech_model=args.assemblyai_speech_model.strip(),
         whisplaybot_recognize_url=args.whisplay_recognize_url,
         whisplaybot_timeout_seconds=args.whisplay_timeout_seconds,
         whisplaybot_partial_window_seconds=args.whisplay_partial_window_seconds,
