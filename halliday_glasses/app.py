@@ -27,21 +27,43 @@ NON_SPEECH_TOKENS = {
     "background",
     "beep",
     "blank",
+    "blowing",
+    "breath",
+    "breathing",
     "buzz",
     "cheering",
     "clapping",
+    "clearing",
+    "clears",
+    "cough",
+    "coughing",
     "crowd",
+    "exhale",
+    "exhaling",
+    "gasp",
+    "gasping",
     "humming",
+    "inhale",
+    "inhaling",
     "instrumental",
     "laughter",
     "melody",
     "music",
     "noise",
     "playing",
+    "rustling",
+    "shuffling",
     "ringing",
+    "sigh",
+    "sighing",
     "silence",
     "singing",
+    "sniff",
+    "sniffing",
     "static",
+    "throat",
+    "wind",
+    "whooshing",
 }
 
 
@@ -1198,10 +1220,37 @@ def should_drop_transcript_text(text: str) -> bool:
         (normalized.startswith("[") and normalized.endswith("]"))
         or (normalized.startswith("(") and normalized.endswith(")"))
     )
+    if wrapped and len(tokens) <= 4 and sum(token in NON_SPEECH_TOKENS for token in tokens) >= max(1, len(tokens) - 1):
+        return True
     if wrapped and len(tokens) <= 8 and all(token in NON_SPEECH_TOKENS for token in tokens):
         return True
 
+    if not looks_like_sentence(normalized, tokens):
+        return True
+
     return False
+
+
+def looks_like_sentence(normalized: str, tokens: list[str]) -> bool:
+    if len(tokens) < 2:
+        return False
+
+    meaningful_tokens = [token for token in tokens if len(token) > 1]
+    if len(meaningful_tokens) < 2:
+        return False
+
+    alpha_chars = sum(1 for char in normalized if char.isalpha())
+    if alpha_chars < 6:
+        return False
+
+    wrapped = (
+        (normalized.startswith("[") and normalized.endswith("]"))
+        or (normalized.startswith("(") and normalized.endswith(")"))
+    )
+    if wrapped:
+        return False
+
+    return True
 
 
 def normalize_cleanup_text(text: str) -> str:
