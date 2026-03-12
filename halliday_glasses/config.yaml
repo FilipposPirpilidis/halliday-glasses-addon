@@ -38,10 +38,10 @@ options:
   assemblyai_speech_model: "universal-streaming-english"
   whisplaybot_recognize_url: "http://192.168.2.29:8801/recognize"
   whisplaybot_timeout_seconds: 60
-  whisplaybot_partial_window_seconds: 1
-  whisplaybot_partial_inference_seconds: 2
-  whisplaybot_auto_final_silence_ms: 1100
-  whisplaybot_auto_final_min_seconds: 2
+  whisplaybot_partial_window_seconds: 2
+  whisplaybot_partial_inference_seconds: 3
+  whisplaybot_auto_final_silence_ms: 1400
+  whisplaybot_auto_final_min_seconds: 3
   whisplaybot_auto_final_silence_level: 900
   translate_url: "http://127.0.0.1:5000/translate"
   translate_pairs:
