@@ -133,7 +133,6 @@ class ServerConfig:
     whisplaybot_auto_final_silence_ms: int
     whisplaybot_auto_final_min_seconds: float
     whisplaybot_auto_final_silence_level: int
-    translate_enabled: bool
     translate_url: str
     translate_pairs: tuple[str, ...]
     translate_source: str
@@ -149,7 +148,6 @@ class AudioState:
     codec: str = "pcm16"
     language: str = "en"
     chunks: bytearray | None = None
-    translate_enabled: bool = False
     translate_pairs: tuple[str, ...] = ()
     translate_source: str = "auto"
     translate_target: str = ""
@@ -796,7 +794,6 @@ class HallidaySession:
         self.vosk_model = vosk_model
         self.translator = translator
         self.state = AudioState(language=cfg.language)
-        self.state.translate_enabled = cfg.translate_enabled
         self.state.translate_pairs = cfg.translate_pairs
         self.state.translate_source = ""
         self.state.translate_target = ""
@@ -880,11 +877,9 @@ class HallidaySession:
             if selected_pair:
                 if self.state.translate_pairs and selected_pair not in self.state.translate_pairs:
                     raise RuntimeError(f"Translation pair '{selected_pair}' is not allowed")
-                self.state.translate_enabled = True
                 self.state.translate_source = source
                 self.state.translate_target = target
             else:
-                self.state.translate_enabled = False
                 self.state.translate_source = ""
                 self.state.translate_target = ""
             await self.send_translation_config()
@@ -1016,7 +1011,7 @@ class HallidaySession:
         return f"{source}-{target}"
 
     def translation_active(self) -> bool:
-        return bool(self.state.translate_enabled and self.current_translation_pair())
+        return bool(self.current_translation_pair())
 
 class WebSocketSession(HallidaySession):
     def __init__(
@@ -1321,7 +1316,6 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--whisplay-auto-final-silence-ms", type=int, default=900)
     parser.add_argument("--whisplay-auto-final-min-seconds", type=float, default=0.8)
     parser.add_argument("--whisplay-auto-final-silence-level", type=int, default=700)
-    parser.add_argument("--translate-enabled", action="store_true")
     parser.add_argument("--translate-url", default="http://127.0.0.1:5000/translate")
     parser.add_argument("--translate-pairs", default='["en-el","el-en","en-de","de-en","en-fr","fr-en"]')
     parser.add_argument("--translate-timeout-seconds", type=float, default=30.0)
@@ -1352,7 +1346,6 @@ def parse_args() -> ServerConfig:
         whisplaybot_auto_final_silence_ms=args.whisplay_auto_final_silence_ms,
         whisplaybot_auto_final_min_seconds=args.whisplay_auto_final_min_seconds,
         whisplaybot_auto_final_silence_level=args.whisplay_auto_final_silence_level,
-        translate_enabled=args.translate_enabled,
         translate_url=args.translate_url,
         translate_pairs=translate_pairs,
         translate_source="",

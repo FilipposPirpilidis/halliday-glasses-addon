@@ -41,7 +41,6 @@ async def main() -> int:
     parser.add_argument("--ha-token", required=True)
     parser.add_argument("--audio-file", type=Path)
     parser.add_argument("--language", default="en")
-    parser.add_argument("--translate-enabled", choices=["true", "false"])
     parser.add_argument("--translate-source")
     parser.add_argument("--translate-target")
     args = parser.parse_args()
@@ -74,14 +73,12 @@ async def main() -> int:
             raise RuntimeError(f"Missing session_id in response: {opened}")
         print(f"[open] session_id={session_id}")
 
-        if args.translate_enabled or args.translate_source or args.translate_target:
+        if args.translate_source or args.translate_target:
             payload = {
                 "id": 2,
                 "type": "halliday_glasses_bridge/translate_set",
                 "session_id": session_id,
             }
-            if args.translate_enabled is not None:
-                payload["enabled"] = args.translate_enabled == "true"
             if args.translate_source:
                 payload["source"] = args.translate_source
             if args.translate_target:

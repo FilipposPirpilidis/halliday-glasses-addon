@@ -24,7 +24,6 @@ WHISPLAYBOT_PARTIAL_INFERENCE_SECONDS="$(bashio::config 'whisplaybot_partial_inf
 WHISPLAYBOT_AUTO_FINAL_SILENCE_MS="$(bashio::config 'whisplaybot_auto_final_silence_ms')"
 WHISPLAYBOT_AUTO_FINAL_MIN_SECONDS="$(bashio::config 'whisplaybot_auto_final_min_seconds')"
 WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL="$(bashio::config 'whisplaybot_auto_final_silence_level')"
-TRANSLATE_ENABLED="$(bashio::config 'translate_enabled')"
 TRANSLATE_URL="$(bashio::config 'translate_url')"
 TRANSLATE_PAIRS="$(bashio::config 'translate_pairs')"
 TRANSLATE_TIMEOUT_SECONDS="$(bashio::config 'translate_timeout_seconds')"
@@ -55,26 +54,18 @@ bashio::log.info "Listening on ${SERVER_HOST}:${SERVER_PORT}"
 bashio::log.info "WebSocket ingress bridge on ${WEBSOCKET_HOST}:${WEBSOCKET_PORT}/ws"
 bashio::log.info "Accepted audio codecs ${ACCEPTED_AUDIO_CODECS}"
 bashio::log.info "Using STT backend ${STT_BACKEND}"
-if bashio::var.true "${TRANSLATE_ENABLED}"; then
-  if [ "${STT_BACKEND}" = "openai" ]; then
-    bashio::log.info "Translation enabled via OpenAI model ${OPENAI_TRANSLATION_MODEL}"
-  else
-    bashio::log.info "Translation enabled via ${TRANSLATE_URL}"
-  fi
-  bashio::log.info "Translation is enabled; active pair must be set by the client"
+if [ "${STT_BACKEND}" = "openai" ]; then
+  bashio::log.info "Translation available via OpenAI model ${OPENAI_TRANSLATION_MODEL}"
 else
-  bashio::log.info "Translation disabled"
+  bashio::log.info "Translation available via ${TRANSLATE_URL}"
 fi
+bashio::log.info "Translation is available; active pair must be set by the client"
 
 TRANSLATE_ARGS=(
   --translate-url "${TRANSLATE_URL}"
   --translate-pairs "${TRANSLATE_PAIRS}"
   --translate-timeout-seconds "${TRANSLATE_TIMEOUT_SECONDS}"
 )
-
-if bashio::var.true "${TRANSLATE_ENABLED}"; then
-  TRANSLATE_ARGS+=(--translate-enabled)
-fi
 
 cleanup() {
   if [ -n "${LIBRETRANSLATE_PID:-}" ]; then
@@ -157,14 +148,12 @@ PY
   bashio::log.warning "Internal LibreTranslate did not become ready before timeout"
 }
 
-if bashio::var.true "${TRANSLATE_ENABLED}" && [ "${STT_BACKEND}" != "openai" ]; then
+if [ "${STT_BACKEND}" != "openai" ]; then
   if [ "${TRANSLATE_URL}" = "http://127.0.0.1:5000/translate" ] || [ "${TRANSLATE_URL}" = "http://localhost:5000/translate" ]; then
     start_internal_libretranslate
   else
     bashio::log.info "Using external translation endpoint ${TRANSLATE_URL}"
   fi
-elif bashio::var.true "${TRANSLATE_ENABLED}" && [ "${STT_BACKEND}" = "openai" ]; then
-  :
 fi
 
 if [ "${STT_BACKEND}" = "openai" ]; then

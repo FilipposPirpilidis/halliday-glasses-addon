@@ -221,7 +221,6 @@ def _register_commands(hass: HomeAssistant) -> None:
         vol.Optional("rate", default=16000): int,
         vol.Optional("width", default=2): int,
         vol.Optional("channels", default=1): int,
-        vol.Optional("translate_enabled"): bool,
         vol.Optional("translate_source"): str,
         vol.Optional("translate_target"): str,
     }
@@ -244,11 +243,10 @@ async def websocket_open_stream(hass: HomeAssistant, connection: ActiveConnectio
 
     connection.subscriptions[msg["id"]] = unsubscribe
 
-    if "translate_enabled" in msg or "translate_source" in msg or "translate_target" in msg:
+    if "translate_source" in msg or "translate_target" in msg:
         await session.send(
             "translate-set",
             {
-                "enabled": msg.get("translate_enabled"),
                 "source": msg.get("translate_source", ""),
                 "target": msg.get("translate_target", ""),
             },
@@ -319,7 +317,6 @@ async def websocket_translate_get(hass: HomeAssistant, connection: ActiveConnect
         vol.Required("id"): int,
         vol.Required("type"): f"{DOMAIN}/translate_set",
         vol.Required("session_id"): str,
-        vol.Optional("enabled"): bool,
         vol.Optional("source"): str,
         vol.Optional("target"): str,
         vol.Optional("pair"): str,
@@ -332,7 +329,7 @@ async def websocket_translate_set(hass: HomeAssistant, connection: ActiveConnect
         connection.send_error(msg["id"], "not_found", "Unknown session_id")
         return
     payload: dict[str, Any] = {}
-    for key in ("enabled", "source", "target", "pair"):
+    for key in ("source", "target", "pair"):
         if key in msg:
             payload[key] = msg[key]
     await session.send("translate-set", payload)
