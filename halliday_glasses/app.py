@@ -131,11 +131,6 @@ class ServerConfig:
     whisplaybot_auto_final_silence_ms: int
     whisplaybot_auto_final_min_seconds: float
     whisplaybot_auto_final_silence_level: int
-    whisplay_agent_enabled: bool
-    whisplay_agent_url: str
-    whisplay_agent_model: str
-    whisplay_agent_prompt: str
-    whisplay_agent_timeout_seconds: float
     translate_enabled: bool
     translate_url: str
     translate_pairs: tuple[str, ...]
@@ -156,7 +151,6 @@ class AudioState:
     translate_pairs: tuple[str, ...] = ()
     translate_source: str = "auto"
     translate_target: str = ""
-    agent_busy: bool = False
 
     def reset(self) -> None:
         self.chunks = bytearray()
@@ -254,141 +248,6 @@ class Translator:
             raise RuntimeError(f"OpenAI translation HTTP {err.code}: {body}") from err
         except URLError as err:
             raise RuntimeError(f"OpenAI translation request failed: {err}") from err
-
-
-class WhisplayAgent:
-    def __init__(self, cfg: ServerConfig):
-        self.cfg = cfg
-
-    async def clean_text(self, text: str) -> str:
-        if not self.cfg.whisplay_agent_enabled or not self.cfg.whisplay_agent_url:
-            return text
-
-        system_prompt = self.cfg.whisplay_agent_prompt.strip()
-
-        def _request() -> str:
-            attempts: list[str] = []
-            for payload in self.build_payloads(text, system_prompt):
-                request = Request(
-                    self.cfg.whisplay_agent_url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                try:
-                    with urlopen(request, timeout=max(self.cfg.whisplay_agent_timeout_seconds, 5.0)) as response:
-                        body = response.read().decode("utf-8")
-                        decoded = json.loads(body)
-                        cleaned = self.parse_response(decoded, body)
-                        if cleaned:
-                            return cleaned
-                        attempts.append(f"200:{body}")
-                except HTTPError as err:
-                    body = err.read().decode("utf-8", errors="replace")
-                    attempts.append(f"{err.code}:{body}")
-                    if err.code == 400 and "invalid" in body.lower():
-                        continue
-                    raise RuntimeError(f"Whisplay agent HTTP {err.code}: {body}") from err
-            raise RuntimeError(f"Whisplay agent returned no text. Attempts: {' | '.join(attempts)}")
-
-        try:
-            return await asyncio.to_thread(_request)
-        except URLError as err:
-            raise RuntimeError(f"Whisplay agent request failed: {err}") from err
-
-    def build_payloads(self, text: str, system_prompt: str) -> list[dict[str, Any]]:
-        url = self.cfg.whisplay_agent_url.lower()
-        if url.endswith("/llm/qwen") or "/llm/qwen?" in url:
-            payload: dict[str, Any] = {"text": text}
-            if system_prompt:
-                payload["systemPrompt"] = system_prompt
-            return [payload]
-
-        if "/api/chat" in url:
-            payloads: list[dict[str, Any]] = []
-            if system_prompt:
-                payloads.append(
-                    {
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": text},
-                        ],
-                        "stream": False,
-                    }
-                )
-            payloads.extend(
-                [
-                    {
-                        "messages": [
-                            {"role": "user", "content": text},
-                        ],
-                        "stream": False,
-                    },
-                    {
-                        "messages": [
-                            {"content": text},
-                        ],
-                        "stream": False,
-                    },
-                ]
-            )
-            return payloads
-
-        if "/api/generate" in url:
-            payloads = [
-                {"prompt": text, "stream": False},
-                {"message": text, "stream": False},
-                {"text": text, "stream": False},
-                {"query": text, "stream": False},
-                {"input": text, "stream": False},
-            ]
-            if system_prompt:
-                for payload in payloads:
-                    payload["system_prompt"] = system_prompt
-            return payloads
-
-        return [
-            {
-                "model": self.cfg.whisplay_agent_model,
-                "temperature": 0,
-                "messages": (
-                    [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": text},
-                    ]
-                    if system_prompt
-                    else [{"role": "user", "content": text}]
-                ),
-            }
-        ]
-
-    def parse_response(self, decoded: dict[str, Any], raw_body: str) -> str:
-        for key in ("response", "text", "content", "result", "output", "message"):
-            direct = normalize_cleanup_text(self.extract_text(decoded.get(key)))
-            if direct:
-                return direct
-
-        choices = decoded.get("choices") or []
-        if not choices:
-            raise RuntimeError(f"Cleanup response missing content: {raw_body}")
-        message = choices[0].get("message") or {}
-        return normalize_cleanup_text(self.extract_text(message.get("content")))
-
-    def extract_text(self, value: Any) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        if isinstance(value, dict):
-            for key in ("text", "content", "response", "result", "output", "message"):
-                nested = self.extract_text(value.get(key))
-                if nested:
-                    return nested
-            return ""
-        if isinstance(value, list):
-            parts = [self.extract_text(item).strip() for item in value]
-            return " ".join(part for part in parts if part)
-        return str(value)
 
 
 class AudioDecoder:
@@ -816,14 +675,12 @@ class HallidaySession:
         cfg: ServerConfig,
         vosk_model: Optional[Model],
         translator: Translator,
-        cleaner: WhisplayAgent,
     ):
         self.reader = reader
         self.writer = writer
         self.cfg = cfg
         self.vosk_model = vosk_model
         self.translator = translator
-        self.cleaner = cleaner
         self.state = AudioState(language=cfg.language)
         self.state.translate_enabled = cfg.translate_enabled
         self.state.translate_pairs = cfg.translate_pairs
@@ -833,7 +690,6 @@ class HallidaySession:
         self.backend = None
         self.decoder: AudioDecoder = PCM16Decoder()
         self._send_lock = asyncio.Lock()
-        self._agent_task: Optional[asyncio.Task] = None
 
     async def run(self) -> None:
         peer = self.writer.get_extra_info("peername")
@@ -849,12 +705,6 @@ class HallidaySession:
         except Exception:
             LOGGER.exception("Session failure for %s", peer)
         finally:
-            if self._agent_task is not None:
-                self._agent_task.cancel()
-                try:
-                    await self._agent_task
-                except asyncio.CancelledError:
-                    pass
             await self.close_backend()
             self.writer.close()
             try:
@@ -926,7 +776,6 @@ class HallidaySession:
         if event_type == "audio-start":
             await self.close_backend()
             self.state.reset()
-            self.state.agent_busy = False
             self.state.rate = int(data.get("rate") or 16000)
             self.state.width = int(data.get("width") or 2)
             self.state.channels = int(data.get("channels") or 1)
@@ -940,8 +789,6 @@ class HallidaySession:
             return
 
         if event_type == "audio-chunk":
-            if self.state.agent_busy:
-                return
             if self.backend is not None:
                 decoded_payload = await self.decoder.decode(payload)
                 if decoded_payload:
@@ -952,7 +799,6 @@ class HallidaySession:
             if self.backend is not None:
                 await self.backend.finish()
                 await self.close_backend()
-            self.state.agent_busy = False
             self.state.reset()
             return
 
@@ -994,32 +840,7 @@ class HallidaySession:
             return
         if should_drop_transcript_text(text):
             return
-        if self.cfg.stt_backend == "whisplaybot" and self.cfg.whisplay_agent_enabled:
-            self.state.agent_busy = True
-            if self._agent_task is not None:
-                self._agent_task.cancel()
-            self._agent_task = asyncio.create_task(self._emit_whisplay_agent_result(text))
-            return
-
         await self._emit_transcript_result(text)
-
-    async def _emit_whisplay_agent_result(self, text: str) -> None:
-        original_text = text
-        try:
-            LOGGER.info("Whisplay agent request: %s", original_text)
-            cleaned = normalize_cleanup_text(await self.cleaner.clean_text(text))
-            if cleaned and not should_drop_transcript_text(cleaned):
-                text = cleaned
-            LOGGER.info("Whisplay agent response: %s", text)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            LOGGER.exception("Whisplay agent failed")
-        finally:
-            self.state.agent_busy = False
-            self._agent_task = None
-
-        await self._emit_transcript_result(text, allow_translation=False)
 
     async def _emit_transcript_result(self, text: str, allow_translation: bool = True) -> None:
         if not allow_translation or not self.state.translate_enabled or not self.state.translate_target:
@@ -1091,10 +912,9 @@ class WebSocketSession(HallidaySession):
         cfg: ServerConfig,
         vosk_model: Optional[Model],
         translator: Translator,
-        cleaner: WhisplayAgent,
     ):
         self.websocket = websocket
-        super().__init__(None, None, cfg, vosk_model, translator, cleaner)
+        super().__init__(None, None, cfg, vosk_model, translator)
 
     async def run(self) -> None:
         peer = getattr(self.websocket, "remote_address", None)
@@ -1318,7 +1138,6 @@ def normalize_cleanup_text(text: str) -> str:
 async def serve(cfg: ServerConfig) -> None:
     vosk_model = None
     translator = Translator(cfg)
-    cleaner = WhisplayAgent(cfg)
     if cfg.stt_backend == "vosk":
         LOGGER.info("Loading Vosk model from %s", cfg.model_path)
         vosk_model = Model(cfg.model_path)
@@ -1331,22 +1150,16 @@ async def serve(cfg: ServerConfig) -> None:
         )
     if cfg.stt_backend == "whisplaybot":
         LOGGER.info("WhisplayBot backend enabled with recognize URL %s", cfg.whisplaybot_recognize_url)
-        if cfg.whisplay_agent_enabled:
-            LOGGER.info(
-                "Whisplay agent enabled with model %s via %s",
-                cfg.whisplay_agent_model,
-                cfg.whisplay_agent_url,
-            )
 
     async def on_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        session = HallidaySession(reader, writer, cfg, vosk_model, translator, cleaner)
+        session = HallidaySession(reader, writer, cfg, vosk_model, translator)
         await session.run()
 
     async def on_websocket_connect(websocket) -> None:
         if getattr(websocket, "path", "") not in {"", "/", "/ws"}:
             await websocket.close(code=1008, reason="Unsupported path")
             return
-        session = WebSocketSession(websocket, cfg, vosk_model, translator, cleaner)
+        session = WebSocketSession(websocket, cfg, vosk_model, translator)
         await session.run()
 
     server = await asyncio.start_server(on_connect, cfg.listen_host, cfg.listen_port)
@@ -1388,11 +1201,6 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--whisplay-auto-final-silence-ms", type=int, default=900)
     parser.add_argument("--whisplay-auto-final-min-seconds", type=float, default=0.8)
     parser.add_argument("--whisplay-auto-final-silence-level", type=int, default=700)
-    parser.add_argument("--whisplay-agent-enabled", action="store_true")
-    parser.add_argument("--whisplay-agent-url", default="http://192.168.2.29:8000/api/chat")
-    parser.add_argument("--whisplay-agent-model", default="qwen3.5")
-    parser.add_argument("--whisplay-agent-prompt", default="")
-    parser.add_argument("--whisplay-agent-timeout-seconds", type=float, default=12.0)
     parser.add_argument("--translate-enabled", action="store_true")
     parser.add_argument("--translate-url", default="http://127.0.0.1:5000/translate")
     parser.add_argument("--translate-pairs", default='["en-el","el-en","en-de","de-en","en-fr","fr-en"]')
@@ -1432,11 +1240,6 @@ def parse_args() -> ServerConfig:
         whisplaybot_auto_final_silence_ms=args.whisplay_auto_final_silence_ms,
         whisplaybot_auto_final_min_seconds=args.whisplay_auto_final_min_seconds,
         whisplaybot_auto_final_silence_level=args.whisplay_auto_final_silence_level,
-        whisplay_agent_enabled=args.whisplay_agent_enabled,
-        whisplay_agent_url=args.whisplay_agent_url.strip(),
-        whisplay_agent_model=args.whisplay_agent_model.strip(),
-        whisplay_agent_prompt=args.whisplay_agent_prompt,
-        whisplay_agent_timeout_seconds=args.whisplay_agent_timeout_seconds,
         translate_enabled=args.translate_enabled,
         translate_url=args.translate_url,
         translate_pairs=translate_pairs,

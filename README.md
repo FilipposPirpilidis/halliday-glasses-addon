@@ -95,29 +95,6 @@ If `translate_url` stays on `127.0.0.1`, the add-on starts LibreTranslate inside
 - `whisplaybot_auto_final_silence_ms`: default `1100`
 - `whisplaybot_auto_final_min_seconds`: default `2`
 - `whisplaybot_auto_final_silence_level`: default `900`
-- `whisplay_agent_enabled`: optional final-text agent pass for WhisplayBot output
-- `whisplay_agent_url`: default `http://192.168.2.29:8000/api/chat`
-- `whisplay_agent_model`: default `qwen3.5`
-- `whisplay_agent_prompt`: optional override for the cleanup instruction
-- `whisplay_agent_timeout_seconds`: default `12`
-
-The reference project shows the Raspberry Pi Qwen upstream configured as:
-
-```text
-POST http://192.168.2.29:8000/api/chat
-```
-
-The old bridge tries chat-style payloads first, for example:
-
-```json
-{"messages":[{"role":"system","content":"cleanup prompt"},{"role":"user","content":"raw transcript"}],"stream":false}
-```
-
-and it accepts text from fields like:
-
-```json
-{"response":"cleaned sentence"}
-```
 
 For the LM8850 prebuilt image, see:
 [PiSugar Whisplay AI Chatbot Prebuild Image - LLM8850](https://github.com/PiSugar/whisplay-ai-chatbot/wiki/Prebuild-Image-%E2%80%90-LLM8850)
