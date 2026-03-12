@@ -15,12 +15,6 @@ OPENAI_REALTIME_MODEL="$(bashio::config 'openai_realtime_model')"
 OPENAI_TRANSCRIPTION_MODEL="$(bashio::config 'openai_transcription_model')"
 OPENAI_TRANSLATION_MODEL="$(bashio::config 'openai_translation_model')"
 OPENAI_PROMPT="$(bashio::config 'openai_prompt')"
-OPENAI_NOISE_REDUCTION="$(bashio::config 'openai_noise_reduction')"
-OPENAI_TURN_DETECTION="$(bashio::config 'openai_turn_detection')"
-OPENAI_VAD_THRESHOLD="$(bashio::config 'openai_vad_threshold')"
-OPENAI_VAD_PREFIX_PADDING_MS="$(bashio::config 'openai_vad_prefix_padding_ms')"
-OPENAI_VAD_SILENCE_DURATION_MS="$(bashio::config 'openai_vad_silence_duration_ms')"
-OPENAI_SEMANTIC_VAD_EAGERNESS="$(bashio::config 'openai_semantic_vad_eagerness')"
 WHISPLAYBOT_RECOGNIZE_URL="$(bashio::config 'whisplaybot_recognize_url')"
 WHISPLAYBOT_TIMEOUT_SECONDS="$(bashio::config 'whisplaybot_timeout_seconds')"
 WHISPLAYBOT_PARTIAL_WINDOW_SECONDS="$(bashio::config 'whisplaybot_partial_window_seconds')"
@@ -185,8 +179,6 @@ if [ "${STT_BACKEND}" = "openai" ]; then
   bashio::log.info "OpenAI realtime session model ${OPENAI_REALTIME_MODEL}"
   bashio::log.info "OpenAI transcription model ${OPENAI_TRANSCRIPTION_MODEL}"
   bashio::log.info "OpenAI translation model ${OPENAI_TRANSLATION_MODEL}"
-  bashio::log.info "OpenAI noise reduction ${OPENAI_NOISE_REDUCTION}"
-  bashio::log.info "OpenAI turn detection ${OPENAI_TURN_DETECTION}"
   exec python3 /app.py \
     --listen-host "${SERVER_HOST}" \
     --listen-port "${SERVER_PORT}" \
@@ -201,12 +193,6 @@ if [ "${STT_BACKEND}" = "openai" ]; then
     --openai-transcription-model "${OPENAI_TRANSCRIPTION_MODEL}" \
     --openai-translation-model "${OPENAI_TRANSLATION_MODEL}" \
     --openai-prompt "${OPENAI_PROMPT}" \
-    --openai-noise-reduction "${OPENAI_NOISE_REDUCTION}" \
-    --openai-turn-detection "${OPENAI_TURN_DETECTION}" \
-    --openai-vad-threshold "${OPENAI_VAD_THRESHOLD}" \
-    --openai-vad-prefix-padding-ms "${OPENAI_VAD_PREFIX_PADDING_MS}" \
-    --openai-vad-silence-duration-ms "${OPENAI_VAD_SILENCE_DURATION_MS}" \
-    --openai-semantic-vad-eagerness "${OPENAI_SEMANTIC_VAD_EAGERNESS}" \
     "${TRANSLATE_ARGS[@]}"
 elif [ "${STT_BACKEND}" = "whisplaybot" ]; then
   bashio::log.info "WhisplayBot backend enabled"

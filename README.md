@@ -85,22 +85,6 @@ If `translate_url` stays on `127.0.0.1`, the add-on starts LibreTranslate inside
 - `openai_transcription_model`: transcription model, default `gpt-4o-mini-transcribe`
 - `openai_translation_model`: translation model used when `stt_backend: openai` and translation is enabled, default `gpt-4.1-nano`
 - `openai_prompt`: optional prompt
-- `openai_noise_reduction`: `near_field`, `far_field`, or `none`; default `far_field`
-- `openai_turn_detection`: `server_vad`, `semantic_vad`, or `none`; default `server_vad`
-- `openai_vad_threshold`: default `0.3`
-- `openai_vad_prefix_padding_ms`: default `500`
-- `openai_vad_silence_duration_ms`: default `800`
-- `openai_semantic_vad_eagerness`: default `low`
-
-For TV, monitor, or laptop-speaker audio, the default OpenAI settings are now biased toward far-field audio:
-
-```yaml
-openai_noise_reduction: far_field
-openai_turn_detection: server_vad
-openai_vad_threshold: 0.3
-openai_vad_prefix_padding_ms: 500
-openai_vad_silence_duration_ms: 800
-```
 
 ## WhisplayBot Options
 
