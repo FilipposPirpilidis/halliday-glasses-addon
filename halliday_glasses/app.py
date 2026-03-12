@@ -1110,7 +1110,17 @@ def parse_translation_pairs(raw_value: str) -> tuple[str, ...]:
             decoded = []
         values = [str(item).strip() for item in decoded if str(item).strip()]
     else:
-        values = [item.strip() for item in raw_value.split(",") if item.strip()]
+        normalized = raw_value.replace("\r", "\n")
+        values = []
+        for chunk in normalized.replace(",", "\n").split("\n"):
+            item = chunk.strip()
+            if not item:
+                continue
+            if item.startswith("-"):
+                item = item[1:].strip()
+            item = item.strip("\"'")
+            if item:
+                values.append(item)
 
     pairs: list[str] = []
     for value in values:
