@@ -492,6 +492,9 @@ class AssemblyAIBackend:
         self.websocket = None
         self.receive_task: Optional[asyncio.Task] = None
         self.last_partial_text = ""
+        self.pending_pcm = bytearray()
+        self.min_chunk_bytes = 0
+        self.max_chunk_bytes = 0
 
     async def start(self, state: AudioState) -> None:
         if state.width != 2 or state.channels != 1:
@@ -510,17 +513,29 @@ class AssemblyAIBackend:
         headers = {"Authorization": self.cfg.assemblyai_api_key}
         self.websocket = await websockets.connect(uri, extra_headers=headers, max_size=None)
         self.last_partial_text = ""
+        self.pending_pcm.clear()
+        bytes_per_second = int(state.rate) * int(state.width) * int(state.channels)
+        self.min_chunk_bytes = max(int(bytes_per_second * 0.10), int(bytes_per_second * 0.05))
+        self.max_chunk_bytes = int(bytes_per_second * 1.0)
         self.receive_task = asyncio.create_task(self.receive_loop())
 
     async def process_chunk(self, payload: bytes, _state: AudioState) -> None:
         if self.websocket is None or not payload:
             return
-        await self.websocket.send(payload)
+        self.pending_pcm.extend(payload)
+        while len(self.pending_pcm) >= self.min_chunk_bytes:
+            chunk_size = min(len(self.pending_pcm), self.max_chunk_bytes)
+            chunk = bytes(self.pending_pcm[:chunk_size])
+            del self.pending_pcm[:chunk_size]
+            await self.websocket.send(chunk)
 
     async def finish(self) -> None:
         if self.websocket is None:
             return
         try:
+            if len(self.pending_pcm) >= self.min_chunk_bytes:
+                await self.websocket.send(bytes(self.pending_pcm))
+            self.pending_pcm.clear()
             await self.websocket.send(json.dumps({"type": "ForceEndpoint"}))
             await asyncio.sleep(0.2)
             await self.websocket.send(json.dumps({"type": "Terminate"}))
@@ -542,6 +557,9 @@ class AssemblyAIBackend:
             self.websocket = None
 
         self.last_partial_text = ""
+        self.pending_pcm.clear()
+        self.min_chunk_bytes = 0
+        self.max_chunk_bytes = 0
 
     async def receive_loop(self) -> None:
         websocket = self.websocket
