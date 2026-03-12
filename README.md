@@ -2,6 +2,13 @@
 
 This repository contains a Home Assistant add-on that exposes live speech-to-text for Halliday Glasses.
 
+## Distribution
+
+- HACS: installs the `halliday_glasses_bridge` custom integration
+- Home Assistant Add-on Store: installs the `halliday_glasses` add-on
+
+HACS does not install Home Assistant add-ons, so this repo uses both distribution paths.
+
 ## Backends
 
 Set `stt_backend` to one of:
@@ -54,6 +61,29 @@ For the LM8850 prebuilt image, see:
 ## Home Assistant Integration
 
 This repo also includes a custom integration in [`/Users/filippospirpilidis/Projects/halliday-glasses-addon/custom_components/halliday_glasses_bridge`](/Users/filippospirpilidis/Projects/halliday-glasses-addon/custom_components/halliday_glasses_bridge) so clients connect only to Home Assistant `/api/websocket`.
+
+### Install With HACS
+
+1. Open HACS in Home Assistant.
+2. Go to `Integrations`.
+3. Open the three-dot menu and choose `Custom repositories`.
+4. Add:
+
+```text
+https://github.com/FilipposPirpilidis/halliday-glasses-addon
+```
+
+5. Category: `Integration`
+6. Install `Halliday Glasses Bridge`
+7. Restart Home Assistant
+
+### Install Add-on
+
+Install the add-on separately from the Home Assistant Add-on Store using this repository URL:
+
+```text
+https://github.com/FilipposPirpilidis/halliday-glasses-addon
+```
 
 Install it into Home Assistant:
 

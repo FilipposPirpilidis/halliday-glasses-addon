@@ -710,7 +710,7 @@ class HallidaySession:
             self.writer.close()
             try:
                 await self.writer.wait_closed()
-            except ConnectionResetError:
+            except (BrokenPipeError, ConnectionResetError):
                 pass
 
     async def handle_event(self, event: dict[str, Any], payload: bytes) -> None:
