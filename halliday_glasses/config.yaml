@@ -40,11 +40,11 @@ options:
   whisplaybot_auto_final_silence_ms: 1100
   whisplaybot_auto_final_min_seconds: 2
   whisplaybot_auto_final_silence_level: 900
-  whisplaybot_cleanup_enabled: false
-  whisplaybot_cleanup_url: "http://192.168.2.29:8000/api/chat"
-  whisplaybot_cleanup_model: "qwen3.5"
-  whisplaybot_cleanup_prompt: ""
-  whisplaybot_cleanup_timeout_seconds: 12
+  whisplay_agent_enabled: false
+  whisplay_agent_url: "http://192.168.2.29:8000/api/chat"
+  whisplay_agent_model: "qwen3.5"
+  whisplay_agent_prompt: ""
+  whisplay_agent_timeout_seconds: 12
   translate_enabled: false
   translate_url: "http://127.0.0.1:5000/translate"
   translate_pairs:
@@ -77,11 +77,11 @@ schema:
   whisplaybot_auto_final_silence_ms: int
   whisplaybot_auto_final_min_seconds: int
   whisplaybot_auto_final_silence_level: int
-  whisplaybot_cleanup_enabled: bool
-  whisplaybot_cleanup_url: str
-  whisplaybot_cleanup_model: str
-  whisplaybot_cleanup_prompt: str
-  whisplaybot_cleanup_timeout_seconds: int
+  whisplay_agent_enabled: bool
+  whisplay_agent_url: str
+  whisplay_agent_model: str
+  whisplay_agent_prompt: str
+  whisplay_agent_timeout_seconds: int
   translate_enabled: bool
   translate_url: str
   translate_pairs:

@@ -94,11 +94,11 @@ If `translate_url` stays on `127.0.0.1`, the add-on starts LibreTranslate inside
 - `whisplaybot_auto_final_silence_ms`: default `1100`
 - `whisplaybot_auto_final_min_seconds`: default `2`
 - `whisplaybot_auto_final_silence_level`: default `900`
-- `whisplaybot_cleanup_enabled`: optional final-text cleanup for WhisplayBot output
-- `whisplaybot_cleanup_url`: default `http://192.168.2.29:8000/api/chat`
-- `whisplaybot_cleanup_model`: default `qwen3.5`
-- `whisplaybot_cleanup_prompt`: optional override for the cleanup instruction
-- `whisplaybot_cleanup_timeout_seconds`: default `12`
+- `whisplay_agent_enabled`: optional final-text agent pass for WhisplayBot output
+- `whisplay_agent_url`: default `http://192.168.2.29:8000/api/chat`
+- `whisplay_agent_model`: default `qwen3.5`
+- `whisplay_agent_prompt`: optional override for the cleanup instruction
+- `whisplay_agent_timeout_seconds`: default `12`
 
 The reference project shows the Raspberry Pi Qwen upstream configured as:
 

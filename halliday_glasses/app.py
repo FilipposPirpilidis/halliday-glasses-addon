@@ -111,11 +111,11 @@ class ServerConfig:
     whisplaybot_auto_final_silence_ms: int
     whisplaybot_auto_final_min_seconds: float
     whisplaybot_auto_final_silence_level: int
-    whisplaybot_cleanup_enabled: bool
-    whisplaybot_cleanup_url: str
-    whisplaybot_cleanup_model: str
-    whisplaybot_cleanup_prompt: str
-    whisplaybot_cleanup_timeout_seconds: float
+    whisplay_agent_enabled: bool
+    whisplay_agent_url: str
+    whisplay_agent_model: str
+    whisplay_agent_prompt: str
+    whisplay_agent_timeout_seconds: float
     translate_enabled: bool
     translate_url: str
     translate_pairs: tuple[str, ...]
@@ -136,6 +136,7 @@ class AudioState:
     translate_pairs: tuple[str, ...] = ()
     translate_source: str = "auto"
     translate_target: str = ""
+    agent_busy: bool = False
 
     def reset(self) -> None:
         self.chunks = bytearray()
@@ -179,33 +180,27 @@ class Translator:
             raise RuntimeError(f"LibreTranslate request failed: {err}") from err
 
 
-class TranscriptCleaner:
+class WhisplayAgent:
     def __init__(self, cfg: ServerConfig):
         self.cfg = cfg
 
-    async def clean_whisplaybot_text(self, text: str) -> str:
-        if not self.cfg.whisplaybot_cleanup_enabled or not self.cfg.whisplaybot_cleanup_url:
+    async def clean_text(self, text: str) -> str:
+        if not self.cfg.whisplay_agent_enabled or not self.cfg.whisplay_agent_url:
             return text
 
-        system_prompt = self.cfg.whisplaybot_cleanup_prompt.strip() or (
-            "You clean up live speech-to-text output. "
-            "Fix obvious spelling mistakes, punctuation, casing, and broken words. "
-            "Keep the same language and meaning. "
-            "Do not summarize, translate, explain, or add new information. "
-            "Return only the corrected sentence."
-        )
+        system_prompt = self.cfg.whisplay_agent_prompt.strip()
 
         def _request() -> str:
             attempts: list[str] = []
             for payload in self.build_payloads(text, system_prompt):
                 request = Request(
-                    self.cfg.whisplaybot_cleanup_url,
+                    self.cfg.whisplay_agent_url,
                     data=json.dumps(payload).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
                 try:
-                    with urlopen(request, timeout=max(self.cfg.whisplaybot_cleanup_timeout_seconds, 5.0)) as response:
+                    with urlopen(request, timeout=max(self.cfg.whisplay_agent_timeout_seconds, 5.0)) as response:
                         body = response.read().decode("utf-8")
                         decoded = json.loads(body)
                         cleaned = self.parse_response(decoded, body)
@@ -217,64 +212,77 @@ class TranscriptCleaner:
                     attempts.append(f"{err.code}:{body}")
                     if err.code == 400 and "invalid" in body.lower():
                         continue
-                    raise RuntimeError(f"WhisplayBot cleanup HTTP {err.code}: {body}") from err
-            raise RuntimeError(f"WhisplayBot cleanup returned no text. Attempts: {' | '.join(attempts)}")
+                    raise RuntimeError(f"Whisplay agent HTTP {err.code}: {body}") from err
+            raise RuntimeError(f"Whisplay agent returned no text. Attempts: {' | '.join(attempts)}")
 
         try:
             return await asyncio.to_thread(_request)
         except URLError as err:
-            raise RuntimeError(f"WhisplayBot cleanup request failed: {err}") from err
+            raise RuntimeError(f"Whisplay agent request failed: {err}") from err
 
     def build_payloads(self, text: str, system_prompt: str) -> list[dict[str, Any]]:
-        url = self.cfg.whisplaybot_cleanup_url.lower()
+        url = self.cfg.whisplay_agent_url.lower()
         if url.endswith("/llm/qwen") or "/llm/qwen?" in url:
-            return [
-                {
-                    "text": text,
-                    "systemPrompt": system_prompt,
-                }
-            ]
+            payload: dict[str, Any] = {"text": text}
+            if system_prompt:
+                payload["systemPrompt"] = system_prompt
+            return [payload]
 
         if "/api/chat" in url:
-            return [
-                {
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": text},
-                    ],
-                    "stream": False,
-                },
-                {
-                    "messages": [
-                        {"role": "user", "content": text},
-                    ],
-                    "stream": False,
-                },
-                {
-                    "messages": [
-                        {"content": text},
-                    ],
-                    "stream": False,
-                },
-            ]
+            payloads: list[dict[str, Any]] = []
+            if system_prompt:
+                payloads.append(
+                    {
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": text},
+                        ],
+                        "stream": False,
+                    }
+                )
+            payloads.extend(
+                [
+                    {
+                        "messages": [
+                            {"role": "user", "content": text},
+                        ],
+                        "stream": False,
+                    },
+                    {
+                        "messages": [
+                            {"content": text},
+                        ],
+                        "stream": False,
+                    },
+                ]
+            )
+            return payloads
 
         if "/api/generate" in url:
-            return [
-                {"prompt": text, "system_prompt": system_prompt, "stream": False},
-                {"message": text, "system_prompt": system_prompt, "stream": False},
-                {"text": text, "system_prompt": system_prompt, "stream": False},
-                {"query": text, "system_prompt": system_prompt, "stream": False},
-                {"input": text, "system_prompt": system_prompt, "stream": False},
+            payloads = [
+                {"prompt": text, "stream": False},
+                {"message": text, "stream": False},
+                {"text": text, "stream": False},
+                {"query": text, "stream": False},
+                {"input": text, "stream": False},
             ]
+            if system_prompt:
+                for payload in payloads:
+                    payload["system_prompt"] = system_prompt
+            return payloads
 
         return [
             {
-                "model": self.cfg.whisplaybot_cleanup_model,
+                "model": self.cfg.whisplay_agent_model,
                 "temperature": 0,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text},
-                ],
+                "messages": (
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": text},
+                    ]
+                    if system_prompt
+                    else [{"role": "user", "content": text}]
+                ),
             }
         ]
 
@@ -732,7 +740,7 @@ class HallidaySession:
         cfg: ServerConfig,
         vosk_model: Optional[Model],
         translator: Translator,
-        cleaner: TranscriptCleaner,
+        cleaner: WhisplayAgent,
     ):
         self.reader = reader
         self.writer = writer
@@ -748,6 +756,8 @@ class HallidaySession:
         self._closed = False
         self.backend = None
         self.decoder: AudioDecoder = PCM16Decoder()
+        self._send_lock = asyncio.Lock()
+        self._agent_task: Optional[asyncio.Task] = None
 
     async def run(self) -> None:
         peer = self.writer.get_extra_info("peername")
@@ -763,6 +773,12 @@ class HallidaySession:
         except Exception:
             LOGGER.exception("Session failure for %s", peer)
         finally:
+            if self._agent_task is not None:
+                self._agent_task.cancel()
+                try:
+                    await self._agent_task
+                except asyncio.CancelledError:
+                    pass
             await self.close_backend()
             self.writer.close()
             try:
@@ -834,6 +850,7 @@ class HallidaySession:
         if event_type == "audio-start":
             await self.close_backend()
             self.state.reset()
+            self.state.agent_busy = False
             self.state.rate = int(data.get("rate") or 16000)
             self.state.width = int(data.get("width") or 2)
             self.state.channels = int(data.get("channels") or 1)
@@ -847,6 +864,8 @@ class HallidaySession:
             return
 
         if event_type == "audio-chunk":
+            if self.state.agent_busy:
+                return
             if self.backend is not None:
                 decoded_payload = await self.decoder.decode(payload)
                 if decoded_payload:
@@ -857,6 +876,7 @@ class HallidaySession:
             if self.backend is not None:
                 await self.backend.finish()
                 await self.close_backend()
+            self.state.agent_busy = False
             self.state.reset()
             return
 
@@ -879,12 +899,13 @@ class HallidaySession:
             self.backend = None
 
     async def send_event(self, event_type: str, data: Optional[dict[str, Any]] = None, payload: bytes = b"") -> None:
-        self.writer.write(event_bytes(event_type, data, payload))
-        try:
-            await self.writer.drain()
-        except (BrokenPipeError, ConnectionResetError):
-            self._closed = True
-            raise
+        async with self._send_lock:
+            self.writer.write(event_bytes(event_type, data, payload))
+            try:
+                await self.writer.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                self._closed = True
+                raise
 
     async def emit_partial_text(self, text: str) -> None:
         text = text.strip()
@@ -897,15 +918,32 @@ class HallidaySession:
             return
         if should_drop_transcript_text(text):
             return
-        if self.cfg.stt_backend == "whisplaybot" and self.cfg.whisplaybot_cleanup_enabled:
-            try:
-                cleaned = normalize_cleanup_text(await self.cleaner.clean_whisplaybot_text(text))
-                if cleaned and not should_drop_transcript_text(cleaned):
-                    text = cleaned
-            except Exception:
-                LOGGER.exception("WhisplayBot cleanup failed")
+        if self.cfg.stt_backend == "whisplaybot" and self.cfg.whisplay_agent_enabled:
+            self.state.agent_busy = True
+            if self._agent_task is not None:
+                self._agent_task.cancel()
+            self._agent_task = asyncio.create_task(self._emit_whisplay_agent_result(text))
+            return
 
-        if not self.state.translate_enabled or not self.state.translate_target:
+        await self._emit_transcript_result(text)
+
+    async def _emit_whisplay_agent_result(self, text: str) -> None:
+        try:
+            cleaned = normalize_cleanup_text(await self.cleaner.clean_text(text))
+            if cleaned and not should_drop_transcript_text(cleaned):
+                text = cleaned
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("Whisplay agent failed")
+        finally:
+            self.state.agent_busy = False
+            self._agent_task = None
+
+        await self._emit_transcript_result(text, allow_translation=False)
+
+    async def _emit_transcript_result(self, text: str, allow_translation: bool = True) -> None:
+        if not allow_translation or not self.state.translate_enabled or not self.state.translate_target:
             await self.send_event("transcript", {"text": text})
             return
 
@@ -974,7 +1012,7 @@ class WebSocketSession(HallidaySession):
         cfg: ServerConfig,
         vosk_model: Optional[Model],
         translator: Translator,
-        cleaner: TranscriptCleaner,
+        cleaner: WhisplayAgent,
     ):
         self.websocket = websocket
         super().__init__(None, None, cfg, vosk_model, translator, cleaner)
@@ -1003,11 +1041,12 @@ class WebSocketSession(HallidaySession):
             event["data"] = data
         if payload:
             event["payload"] = base64.b64encode(payload).decode("ascii")
-        try:
-            await self.websocket.send(json.dumps(event, separators=(",", ":")))
-        except ConnectionClosed:
-            self._closed = True
-            raise
+        async with self._send_lock:
+            try:
+                await self.websocket.send(json.dumps(event, separators=(",", ":")))
+            except ConnectionClosed:
+                self._closed = True
+                raise
 
 
 def decode_websocket_event(message: Any) -> tuple[dict[str, Any], bytes]:
@@ -1163,14 +1202,17 @@ def should_drop_transcript_text(text: str) -> bool:
 
 
 def normalize_cleanup_text(text: str) -> str:
-    normalized = " ".join((text or "").strip().split())
+    raw = text or ""
+    raw = re.sub(r"<think\b[^>]*>.*?</think>", " ", raw, flags=re.IGNORECASE | re.DOTALL)
+    raw = re.sub(r"</?think\b[^>]*>", " ", raw, flags=re.IGNORECASE)
+    normalized = " ".join(raw.strip().split())
     return normalized.strip(" \"'")
 
 
 async def serve(cfg: ServerConfig) -> None:
     vosk_model = None
     translator = Translator(cfg)
-    cleaner = TranscriptCleaner(cfg)
+    cleaner = WhisplayAgent(cfg)
     if cfg.stt_backend == "vosk":
         LOGGER.info("Loading Vosk model from %s", cfg.model_path)
         vosk_model = Model(cfg.model_path)
@@ -1183,11 +1225,11 @@ async def serve(cfg: ServerConfig) -> None:
         )
     if cfg.stt_backend == "whisplaybot":
         LOGGER.info("WhisplayBot backend enabled with recognize URL %s", cfg.whisplaybot_recognize_url)
-        if cfg.whisplaybot_cleanup_enabled:
+        if cfg.whisplay_agent_enabled:
             LOGGER.info(
-                "WhisplayBot cleanup enabled with model %s via %s",
-                cfg.whisplaybot_cleanup_model,
-                cfg.whisplaybot_cleanup_url,
+                "Whisplay agent enabled with model %s via %s",
+                cfg.whisplay_agent_model,
+                cfg.whisplay_agent_url,
             )
 
     async def on_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -1242,11 +1284,11 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--whisplay-auto-final-silence-ms", type=int, default=900)
     parser.add_argument("--whisplay-auto-final-min-seconds", type=float, default=0.8)
     parser.add_argument("--whisplay-auto-final-silence-level", type=int, default=700)
-    parser.add_argument("--whisplaybot-cleanup-enabled", action="store_true")
-    parser.add_argument("--whisplaybot-cleanup-url", default="")
-    parser.add_argument("--whisplaybot-cleanup-model", default="qwen3.5")
-    parser.add_argument("--whisplaybot-cleanup-prompt", default="")
-    parser.add_argument("--whisplaybot-cleanup-timeout-seconds", type=float, default=12.0)
+    parser.add_argument("--whisplay-agent-enabled", action="store_true")
+    parser.add_argument("--whisplay-agent-url", default="http://192.168.2.29:8000/api/chat")
+    parser.add_argument("--whisplay-agent-model", default="qwen3.5")
+    parser.add_argument("--whisplay-agent-prompt", default="")
+    parser.add_argument("--whisplay-agent-timeout-seconds", type=float, default=12.0)
     parser.add_argument("--translate-enabled", action="store_true")
     parser.add_argument("--translate-url", default="http://127.0.0.1:5000/translate")
     parser.add_argument("--translate-pairs", default='["en-el","el-en","en-de","de-en","en-fr","fr-en"]')
@@ -1288,11 +1330,11 @@ def parse_args() -> ServerConfig:
         whisplaybot_auto_final_silence_ms=args.whisplay_auto_final_silence_ms,
         whisplaybot_auto_final_min_seconds=args.whisplay_auto_final_min_seconds,
         whisplaybot_auto_final_silence_level=args.whisplay_auto_final_silence_level,
-        whisplaybot_cleanup_enabled=args.whisplaybot_cleanup_enabled,
-        whisplaybot_cleanup_url=args.whisplaybot_cleanup_url.strip(),
-        whisplaybot_cleanup_model=args.whisplaybot_cleanup_model.strip(),
-        whisplaybot_cleanup_prompt=args.whisplaybot_cleanup_prompt,
-        whisplaybot_cleanup_timeout_seconds=args.whisplaybot_cleanup_timeout_seconds,
+        whisplay_agent_enabled=args.whisplay_agent_enabled,
+        whisplay_agent_url=args.whisplay_agent_url.strip(),
+        whisplay_agent_model=args.whisplay_agent_model.strip(),
+        whisplay_agent_prompt=args.whisplay_agent_prompt,
+        whisplay_agent_timeout_seconds=args.whisplay_agent_timeout_seconds,
         translate_enabled=args.translate_enabled,
         translate_url=args.translate_url,
         translate_pairs=translate_pairs,
