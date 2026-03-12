@@ -67,11 +67,11 @@ If you want a Lovelace card later, the right next step is adding entities or a c
 - `translate_enabled`: enable final-text translation after STT
 - `translate_url`: LibreTranslate `/translate` endpoint, default `http://127.0.0.1:5000/translate`
 - `translate_pairs`: allowed source-target pairs such as `en-el` and `el-en`
-- `translate_source`: default source language
-- `translate_target`: default target language
 - `translate_timeout_seconds`: HTTP timeout for translation requests
 
-When translation is enabled, the add-on keeps sending the final result as a normal Wyoming `transcript` event, but `text` becomes the translated string. The original STT text is included as `original_text`.
+The add-on only defines the allowed translation pairs. The active source/target pair must be set by the client at runtime through `translate-set`. If the client does not set a pair, the add-on stays in transcription-only mode even when `translate_enabled` is true.
+
+When translation is active, the add-on keeps sending the final result as a normal Wyoming `transcript` event, but `text` becomes the translated string. The original STT text is included as `original_text`.
 If `translate_url` stays on `127.0.0.1`, the add-on starts LibreTranslate inside the same container and installs the configured `translate_pairs` models into `/data`.
 
 ## Vosk Options
@@ -252,6 +252,8 @@ python3 ha_ws_test.py \
 - A client can change translation settings at runtime without opening the Home Assistant configuration page:
   - send `translate-get` to receive the current pair and available pairs
   - send `translate-set` with `enabled`, `pair`, or explicit `source` and `target`
+  - the selected pair must be in `translate_pairs`
+  - if no pair is selected, the add-on sends only transcription
 
 Example `translate-set` event data:
 

@@ -27,8 +27,6 @@ WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL="$(bashio::config 'whisplaybot_auto_final_s
 TRANSLATE_ENABLED="$(bashio::config 'translate_enabled')"
 TRANSLATE_URL="$(bashio::config 'translate_url')"
 TRANSLATE_PAIRS="$(bashio::config 'translate_pairs')"
-TRANSLATE_SOURCE="$(bashio::config 'translate_source')"
-TRANSLATE_TARGET="$(bashio::config 'translate_target')"
 TRANSLATE_TIMEOUT_SECONDS="$(bashio::config 'translate_timeout_seconds')"
 LIBRETRANSLATE_HOST="127.0.0.1"
 LIBRETRANSLATE_PORT="5000"
@@ -63,7 +61,7 @@ if bashio::var.true "${TRANSLATE_ENABLED}"; then
   else
     bashio::log.info "Translation enabled via ${TRANSLATE_URL}"
   fi
-  bashio::log.info "Selected translation pair ${TRANSLATE_SOURCE}-${TRANSLATE_TARGET}"
+  bashio::log.info "Translation is enabled; active pair must be set by the client"
 else
   bashio::log.info "Translation disabled"
 fi
@@ -71,8 +69,6 @@ fi
 TRANSLATE_ARGS=(
   --translate-url "${TRANSLATE_URL}"
   --translate-pairs "${TRANSLATE_PAIRS}"
-  --translate-source "${TRANSLATE_SOURCE}"
-  --translate-target "${TRANSLATE_TARGET}"
   --translate-timeout-seconds "${TRANSLATE_TIMEOUT_SECONDS}"
 )
 

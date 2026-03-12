@@ -27,7 +27,6 @@ struct CLIOptions {
     var codec: String = "pcm16"
     var language: String = "en"
     var haToken: String? = ProcessInfo.processInfo.environment["HA_TOKEN"]
-    var translateEnabled: Bool?
     var translateSource: String?
     var translateTarget: String?
 
@@ -63,11 +62,6 @@ struct CLIOptions {
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--ha-token") }
                 options.haToken = args[index]
-            case "--translate-enabled":
-                index += 1
-                guard index < args.count else { throw CLIError.missingValue("--translate-enabled") }
-                guard let enabled = parseBool(args[index]) else { throw CLIError.invalidValue("--translate-enabled") }
-                options.translateEnabled = enabled
             case "--translate-source":
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--translate-source") }
@@ -85,17 +79,6 @@ struct CLIOptions {
         }
 
         return options
-    }
-}
-
-func parseBool(_ value: String) -> Bool? {
-    switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-    case "1", "true", "yes", "y", "on":
-        return true
-    case "0", "false", "no", "n", "off":
-        return false
-    default:
-        return nil
     }
 }
 
@@ -723,7 +706,7 @@ final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate,
         }
     }
 
-    func updateTranslationConfig(enabled: Bool? = nil, source: String? = nil, target: String? = nil) {
+    func updateTranslationConfig(source: String? = nil, target: String? = nil) {
         writeQueue.async { [weak self] in
             guard let self else { return }
             do {
@@ -731,9 +714,6 @@ final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate,
                     throw AppError.missingSessionID
                 }
                 var data: [String: Any] = ["session_id": sessionID]
-                if let enabled {
-                    data["enabled"] = enabled
-                }
                 if let source, !source.isEmpty {
                     data["source"] = source
                 }
@@ -989,8 +969,9 @@ func requestMicrophonePermission() -> Bool {
 }
 
 func printUsageAndExit() -> Never {
-    print("Usage: halliday-mic-streamer [--scheme ws|wss] [--host HOST] [--port PORT] [--codec pcm16|opus] --ha-token TOKEN [--language LANG] [--translate-enabled true|false] [--translate-source LANG] [--translate-target LANG]")
+    print("Usage: halliday-mic-streamer [--scheme ws|wss] [--host HOST] [--port PORT] [--codec pcm16|opus] --ha-token TOKEN [--language LANG] [--translate-source LANG] [--translate-target LANG]")
     print("  Default target: ws://homeassistant.local:8123/api/websocket")
+    print("  Translation is enabled only when both --translate-source and --translate-target are provided.")
     exit(0)
 }
 
@@ -1014,11 +995,13 @@ struct HallidayMicStreamer {
             print("Streaming microphone audio continuously. Press ESC to quit.")
             print("Target: \(options.scheme)://\(options.host):\(options.port)")
             print("Audio codec: \(options.codec)")
-            if let translateEnabled = options.translateEnabled {
-                print("Requested translation: \(translateEnabled ? "enabled" : "disabled")")
-            }
+            let hasRequestedPair = options.translateSource != nil && options.translateTarget != nil
+            let shouldEnableTranslation = hasRequestedPair
+            print("Requested translation: \(shouldEnableTranslation ? "enabled" : "disabled")")
             if let translateSource = options.translateSource, let translateTarget = options.translateTarget {
                 print("Requested translation pair: \(translateSource)-\(translateTarget)")
+            } else {
+                print("Requested translation pair: none")
             }
 
             let streamingClient = HomeAssistantWebSocketClient(
@@ -1062,10 +1045,8 @@ struct HallidayMicStreamer {
                 appState.client = streamingClient
             }
             streamingClient.requestTranslationConfig()
-            let requestedEnabled = options.translateEnabled ?? ((options.translateSource != nil || options.translateTarget != nil) ? true : nil)
-            if requestedEnabled != nil || options.translateSource != nil || options.translateTarget != nil {
+            if shouldEnableTranslation {
                 streamingClient.updateTranslationConfig(
-                    enabled: requestedEnabled,
                     source: options.translateSource,
                     target: options.translateTarget
                 )

@@ -798,8 +798,8 @@ class HallidaySession:
         self.state = AudioState(language=cfg.language)
         self.state.translate_enabled = cfg.translate_enabled
         self.state.translate_pairs = cfg.translate_pairs
-        self.state.translate_source = normalize_language_code(cfg.translate_source)
-        self.state.translate_target = normalize_language_code(cfg.translate_target)
+        self.state.translate_source = ""
+        self.state.translate_target = ""
         self._closed = False
         self.backend = None
         self.decoder: AudioDecoder = PCM16Decoder()
@@ -850,7 +850,7 @@ class HallidaySession:
                         }
                     ],
                     "translation": {
-                        "enabled": self.state.translate_enabled,
+                        "enabled": self.translation_active(),
                         "pairs": list(self.state.translate_pairs),
                         "pair": self.current_translation_pair(),
                         "source": self.state.translate_source,
@@ -871,19 +871,22 @@ class HallidaySession:
             return
 
         if event_type == "translate-set":
-            enabled = data.get("enabled")
             pair = (data.get("pair") or "").strip()
             source = normalize_language_code((data.get("source") or "").strip())
             target = normalize_language_code((data.get("target") or "").strip())
-            if enabled is not None:
-                self.state.translate_enabled = bool(enabled)
             if pair:
                 source, target = split_translation_pair(pair)
-            if source:
+            selected_pair = f"{source}-{target}" if source and target else ""
+            if selected_pair:
+                if self.state.translate_pairs and selected_pair not in self.state.translate_pairs:
+                    raise RuntimeError(f"Translation pair '{selected_pair}' is not allowed")
+                self.state.translate_enabled = True
                 self.state.translate_source = source
-            if target:
                 self.state.translate_target = target
-            self.remember_translation_pair()
+            else:
+                self.state.translate_enabled = False
+                self.state.translate_source = ""
+                self.state.translate_target = ""
             await self.send_translation_config()
             return
 
@@ -959,7 +962,7 @@ class HallidaySession:
         await self._emit_transcript_result(text)
 
     async def _emit_transcript_result(self, text: str, allow_translation: bool = True) -> None:
-        if not allow_translation or not self.state.translate_enabled or not self.state.translate_target:
+        if not allow_translation or not self.translation_active():
             await self.send_event("transcript", {"text": text})
             return
 
@@ -997,7 +1000,7 @@ class HallidaySession:
         await self.send_event(
             "translate-config",
             {
-                "enabled": self.state.translate_enabled,
+                "enabled": self.translation_active(),
                 "pairs": list(self.state.translate_pairs),
                 "pair": self.current_translation_pair(),
                 "source": self.state.translate_source,
@@ -1012,14 +1015,8 @@ class HallidaySession:
             return ""
         return f"{source}-{target}"
 
-    def remember_translation_pair(self) -> None:
-        current_pair = self.current_translation_pair()
-        if not current_pair:
-            return
-        if current_pair in self.state.translate_pairs:
-            return
-        self.state.translate_pairs = tuple([*self.state.translate_pairs, current_pair])
-
+    def translation_active(self) -> bool:
+        return bool(self.state.translate_enabled and self.current_translation_pair())
 
 class WebSocketSession(HallidaySession):
     def __init__(
@@ -1327,20 +1324,10 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--translate-enabled", action="store_true")
     parser.add_argument("--translate-url", default="http://127.0.0.1:5000/translate")
     parser.add_argument("--translate-pairs", default='["en-el","el-en","en-de","de-en","en-fr","fr-en"]')
-    parser.add_argument("--translate-source", default="auto")
-    parser.add_argument("--translate-target", default="")
     parser.add_argument("--translate-timeout-seconds", type=float, default=30.0)
     args = parser.parse_args()
     accepted_audio_codecs = parse_audio_codecs(args.accepted_audio_codecs)
     translate_pairs = parse_translation_pairs(args.translate_pairs)
-    translate_source = normalize_language_code(args.translate_source)
-    translate_target = normalize_language_code(args.translate_target)
-    if not translate_target and translate_pairs:
-        translate_source, translate_target = split_translation_pair(translate_pairs[0])
-    if translate_target and translate_pairs:
-        current_pair = f"{translate_source}-{translate_target}"
-        if current_pair not in translate_pairs:
-            translate_source, translate_target = split_translation_pair(translate_pairs[0])
 
     return ServerConfig(
         listen_host=args.listen_host,
@@ -1368,8 +1355,8 @@ def parse_args() -> ServerConfig:
         translate_enabled=args.translate_enabled,
         translate_url=args.translate_url,
         translate_pairs=translate_pairs,
-        translate_source=translate_source,
-        translate_target=translate_target,
+        translate_source="",
+        translate_target="",
         translate_timeout_seconds=args.translate_timeout_seconds,
     )
 

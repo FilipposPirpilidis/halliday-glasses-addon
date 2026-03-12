@@ -52,8 +52,6 @@ options:
     - "de-en"
     - "en-fr"
     - "fr-en"
-  translate_source: "en"
-  translate_target: "el"
   translate_timeout_seconds: 30
 schema:
   server_host: str
@@ -82,6 +80,4 @@ schema:
   translate_url: str
   translate_pairs:
     - str
-  translate_source: str
-  translate_target: str
   translate_timeout_seconds: int
