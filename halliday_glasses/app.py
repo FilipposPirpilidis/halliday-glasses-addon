@@ -111,6 +111,11 @@ class ServerConfig:
     whisplaybot_auto_final_silence_ms: int
     whisplaybot_auto_final_min_seconds: float
     whisplaybot_auto_final_silence_level: int
+    whisplaybot_cleanup_enabled: bool
+    whisplaybot_cleanup_url: str
+    whisplaybot_cleanup_model: str
+    whisplaybot_cleanup_prompt: str
+    whisplaybot_cleanup_timeout_seconds: float
     translate_enabled: bool
     translate_url: str
     translate_pairs: tuple[str, ...]
@@ -172,6 +177,88 @@ class Translator:
             raise RuntimeError(f"LibreTranslate HTTP {err.code}: {body}") from err
         except URLError as err:
             raise RuntimeError(f"LibreTranslate request failed: {err}") from err
+
+
+class TranscriptCleaner:
+    def __init__(self, cfg: ServerConfig):
+        self.cfg = cfg
+
+    async def clean_whisplaybot_text(self, text: str) -> str:
+        if not self.cfg.whisplaybot_cleanup_enabled or not self.cfg.whisplaybot_cleanup_url:
+            return text
+
+        system_prompt = self.cfg.whisplaybot_cleanup_prompt.strip() or (
+            "You clean up live speech-to-text output. "
+            "Fix obvious spelling mistakes, punctuation, casing, and broken words. "
+            "Keep the same language and meaning. "
+            "Do not summarize, translate, explain, or add new information. "
+            "Return only the corrected sentence."
+        )
+
+        payload = self.build_payload(text, system_prompt)
+        request = Request(
+            self.cfg.whisplaybot_cleanup_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        def _request() -> str:
+            with urlopen(request, timeout=max(self.cfg.whisplaybot_cleanup_timeout_seconds, 5.0)) as response:
+                body = response.read().decode("utf-8")
+                decoded = json.loads(body)
+                cleaned = self.parse_response(decoded, body)
+                if not cleaned:
+                    raise RuntimeError(f"Cleanup response missing content: {body}")
+                return cleaned
+
+        try:
+            return await asyncio.to_thread(_request)
+        except HTTPError as err:
+            body = err.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"WhisplayBot cleanup HTTP {err.code}: {body}") from err
+        except URLError as err:
+            raise RuntimeError(f"WhisplayBot cleanup request failed: {err}") from err
+
+    def build_payload(self, text: str, system_prompt: str) -> bytes:
+        url = self.cfg.whisplaybot_cleanup_url.lower()
+        if url.endswith("/llm/qwen") or "/llm/qwen?" in url:
+            return json.dumps(
+                {
+                    "text": text,
+                    "systemPrompt": system_prompt,
+                }
+            ).encode("utf-8")
+
+        return json.dumps(
+            {
+                "model": self.cfg.whisplaybot_cleanup_model,
+                "temperature": 0,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+            }
+        ).encode("utf-8")
+
+    def parse_response(self, decoded: dict[str, Any], raw_body: str) -> str:
+        direct = normalize_cleanup_text(str(decoded.get("response") or ""))
+        if direct:
+            return direct
+
+        choices = decoded.get("choices") or []
+        if not choices:
+            raise RuntimeError(f"Cleanup response missing choices: {raw_body}")
+        message = choices[0].get("message") or {}
+        content = message.get("content") or ""
+        if isinstance(content, list):
+            text_parts = [
+                str(item.get("text", "")).strip()
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
+            ]
+            content = " ".join(part for part in text_parts if part)
+        return normalize_cleanup_text(str(content))
 
 
 class AudioDecoder:
@@ -599,12 +686,14 @@ class HallidaySession:
         cfg: ServerConfig,
         vosk_model: Optional[Model],
         translator: Translator,
+        cleaner: TranscriptCleaner,
     ):
         self.reader = reader
         self.writer = writer
         self.cfg = cfg
         self.vosk_model = vosk_model
         self.translator = translator
+        self.cleaner = cleaner
         self.state = AudioState(language=cfg.language)
         self.state.translate_enabled = cfg.translate_enabled
         self.state.translate_pairs = cfg.translate_pairs
@@ -762,6 +851,13 @@ class HallidaySession:
             return
         if should_drop_transcript_text(text):
             return
+        if self.cfg.stt_backend == "whisplaybot" and self.cfg.whisplaybot_cleanup_enabled:
+            try:
+                cleaned = normalize_cleanup_text(await self.cleaner.clean_whisplaybot_text(text))
+                if cleaned and not should_drop_transcript_text(cleaned):
+                    text = cleaned
+            except Exception:
+                LOGGER.exception("WhisplayBot cleanup failed")
 
         if not self.state.translate_enabled or not self.state.translate_target:
             await self.send_event("transcript", {"text": text})
@@ -826,9 +922,16 @@ class HallidaySession:
 
 
 class WebSocketSession(HallidaySession):
-    def __init__(self, websocket, cfg: ServerConfig, vosk_model: Optional[Model], translator: Translator):
+    def __init__(
+        self,
+        websocket,
+        cfg: ServerConfig,
+        vosk_model: Optional[Model],
+        translator: Translator,
+        cleaner: TranscriptCleaner,
+    ):
         self.websocket = websocket
-        super().__init__(None, None, cfg, vosk_model, translator)
+        super().__init__(None, None, cfg, vosk_model, translator, cleaner)
 
     async def run(self) -> None:
         peer = getattr(self.websocket, "remote_address", None)
@@ -1013,9 +1116,15 @@ def should_drop_transcript_text(text: str) -> bool:
     return False
 
 
+def normalize_cleanup_text(text: str) -> str:
+    normalized = " ".join((text or "").strip().split())
+    return normalized.strip(" \"'")
+
+
 async def serve(cfg: ServerConfig) -> None:
     vosk_model = None
     translator = Translator(cfg)
+    cleaner = TranscriptCleaner(cfg)
     if cfg.stt_backend == "vosk":
         LOGGER.info("Loading Vosk model from %s", cfg.model_path)
         vosk_model = Model(cfg.model_path)
@@ -1028,16 +1137,22 @@ async def serve(cfg: ServerConfig) -> None:
         )
     if cfg.stt_backend == "whisplaybot":
         LOGGER.info("WhisplayBot backend enabled with recognize URL %s", cfg.whisplaybot_recognize_url)
+        if cfg.whisplaybot_cleanup_enabled:
+            LOGGER.info(
+                "WhisplayBot cleanup enabled with model %s via %s",
+                cfg.whisplaybot_cleanup_model,
+                cfg.whisplaybot_cleanup_url,
+            )
 
     async def on_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        session = HallidaySession(reader, writer, cfg, vosk_model, translator)
+        session = HallidaySession(reader, writer, cfg, vosk_model, translator, cleaner)
         await session.run()
 
     async def on_websocket_connect(websocket) -> None:
         if getattr(websocket, "path", "") not in {"", "/", "/ws"}:
             await websocket.close(code=1008, reason="Unsupported path")
             return
-        session = WebSocketSession(websocket, cfg, vosk_model, translator)
+        session = WebSocketSession(websocket, cfg, vosk_model, translator, cleaner)
         await session.run()
 
     server = await asyncio.start_server(on_connect, cfg.listen_host, cfg.listen_port)
@@ -1081,6 +1196,11 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--whisplay-auto-final-silence-ms", type=int, default=900)
     parser.add_argument("--whisplay-auto-final-min-seconds", type=float, default=0.8)
     parser.add_argument("--whisplay-auto-final-silence-level", type=int, default=700)
+    parser.add_argument("--whisplaybot-cleanup-enabled", action="store_true")
+    parser.add_argument("--whisplaybot-cleanup-url", default="")
+    parser.add_argument("--whisplaybot-cleanup-model", default="qwen3.5")
+    parser.add_argument("--whisplaybot-cleanup-prompt", default="")
+    parser.add_argument("--whisplaybot-cleanup-timeout-seconds", type=float, default=12.0)
     parser.add_argument("--translate-enabled", action="store_true")
     parser.add_argument("--translate-url", default="http://127.0.0.1:5000/translate")
     parser.add_argument("--translate-pairs", default='["en-el","el-en","en-de","de-en","en-fr","fr-en"]')
@@ -1122,6 +1242,11 @@ def parse_args() -> ServerConfig:
         whisplaybot_auto_final_silence_ms=args.whisplay_auto_final_silence_ms,
         whisplaybot_auto_final_min_seconds=args.whisplay_auto_final_min_seconds,
         whisplaybot_auto_final_silence_level=args.whisplay_auto_final_silence_level,
+        whisplaybot_cleanup_enabled=args.whisplaybot_cleanup_enabled,
+        whisplaybot_cleanup_url=args.whisplaybot_cleanup_url.strip(),
+        whisplaybot_cleanup_model=args.whisplaybot_cleanup_model.strip(),
+        whisplaybot_cleanup_prompt=args.whisplaybot_cleanup_prompt,
+        whisplaybot_cleanup_timeout_seconds=args.whisplaybot_cleanup_timeout_seconds,
         translate_enabled=args.translate_enabled,
         translate_url=args.translate_url,
         translate_pairs=translate_pairs,

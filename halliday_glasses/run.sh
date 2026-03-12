@@ -21,6 +21,11 @@ WHISPLAYBOT_PARTIAL_INFERENCE_SECONDS="$(bashio::config 'whisplaybot_partial_inf
 WHISPLAYBOT_AUTO_FINAL_SILENCE_MS="$(bashio::config 'whisplaybot_auto_final_silence_ms')"
 WHISPLAYBOT_AUTO_FINAL_MIN_SECONDS="$(bashio::config 'whisplaybot_auto_final_min_seconds')"
 WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL="$(bashio::config 'whisplaybot_auto_final_silence_level')"
+WHISPLAYBOT_CLEANUP_ENABLED="$(bashio::config 'whisplaybot_cleanup_enabled')"
+WHISPLAYBOT_CLEANUP_URL="$(bashio::config 'whisplaybot_cleanup_url')"
+WHISPLAYBOT_CLEANUP_MODEL="$(bashio::config 'whisplaybot_cleanup_model')"
+WHISPLAYBOT_CLEANUP_PROMPT="$(bashio::config 'whisplaybot_cleanup_prompt')"
+WHISPLAYBOT_CLEANUP_TIMEOUT_SECONDS="$(bashio::config 'whisplaybot_cleanup_timeout_seconds')"
 TRANSLATE_ENABLED="$(bashio::config 'translate_enabled')"
 TRANSLATE_URL="$(bashio::config 'translate_url')"
 TRANSLATE_PAIRS="$(bashio::config 'translate_pairs')"
@@ -183,6 +188,19 @@ if [ "${STT_BACKEND}" = "openai" ]; then
 elif [ "${STT_BACKEND}" = "whisplaybot" ]; then
   bashio::log.info "WhisplayBot backend enabled"
   bashio::log.info "WhisplayBot recognize URL ${WHISPLAYBOT_RECOGNIZE_URL}"
+  if bashio::var.true "${WHISPLAYBOT_CLEANUP_ENABLED}"; then
+    bashio::log.info "WhisplayBot cleanup enabled via ${WHISPLAYBOT_CLEANUP_URL} using model ${WHISPLAYBOT_CLEANUP_MODEL}"
+  fi
+  WHISPLAYBOT_CLEANUP_ARGS=()
+  if bashio::var.true "${WHISPLAYBOT_CLEANUP_ENABLED}"; then
+    WHISPLAYBOT_CLEANUP_ARGS+=(--whisplaybot-cleanup-enabled)
+  fi
+  WHISPLAYBOT_CLEANUP_ARGS+=(
+    --whisplaybot-cleanup-url "${WHISPLAYBOT_CLEANUP_URL}"
+    --whisplaybot-cleanup-model "${WHISPLAYBOT_CLEANUP_MODEL}"
+    --whisplaybot-cleanup-prompt "${WHISPLAYBOT_CLEANUP_PROMPT}"
+    --whisplaybot-cleanup-timeout-seconds "${WHISPLAYBOT_CLEANUP_TIMEOUT_SECONDS}"
+  )
   exec python3 /app.py \
     --listen-host "${SERVER_HOST}" \
     --listen-port "${SERVER_PORT}" \
@@ -199,6 +217,7 @@ elif [ "${STT_BACKEND}" = "whisplaybot" ]; then
     --whisplay-auto-final-silence-ms "${WHISPLAYBOT_AUTO_FINAL_SILENCE_MS}" \
     --whisplay-auto-final-min-seconds "${WHISPLAYBOT_AUTO_FINAL_MIN_SECONDS}" \
     --whisplay-auto-final-silence-level "${WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL}" \
+    "${WHISPLAYBOT_CLEANUP_ARGS[@]}" \
     "${TRANSLATE_ARGS[@]}"
 else
   bashio::log.info "Using Vosk backend"

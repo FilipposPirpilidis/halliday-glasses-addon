@@ -89,11 +89,34 @@ If `translate_url` stays on `127.0.0.1`, the add-on starts LibreTranslate inside
 
 - `whisplaybot_recognize_url`: default `http://192.168.2.29:8801/recognize`
 - `whisplaybot_timeout_seconds`
-- `whisplaybot_partial_window_seconds`
-- `whisplaybot_partial_inference_seconds`
-- `whisplaybot_auto_final_silence_ms`
-- `whisplaybot_auto_final_min_seconds`
-- `whisplaybot_auto_final_silence_level`
+- `whisplaybot_partial_window_seconds`: default `1`
+- `whisplaybot_partial_inference_seconds`: default `2`
+- `whisplaybot_auto_final_silence_ms`: default `1100`
+- `whisplaybot_auto_final_min_seconds`: default `2`
+- `whisplaybot_auto_final_silence_level`: default `900`
+- `whisplaybot_cleanup_enabled`: optional final-text cleanup for WhisplayBot output
+- `whisplaybot_cleanup_url`: default `http://192.168.2.29:8090/llm/qwen`
+- `whisplaybot_cleanup_model`: default `qwen3.5`
+- `whisplaybot_cleanup_prompt`: optional override for the cleanup instruction
+- `whisplaybot_cleanup_timeout_seconds`: default `12`
+
+The Raspberry Pi bridge route from the reference project is:
+
+```text
+POST http://192.168.2.29:8090/llm/qwen
+```
+
+with request body:
+
+```json
+{"text":"raw transcript","systemPrompt":"optional cleanup prompt"}
+```
+
+and response body:
+
+```json
+{"response":"cleaned sentence"}
+```
 
 For the LM8850 prebuilt image, see:
 [PiSugar Whisplay AI Chatbot Prebuild Image - LLM8850](https://github.com/PiSugar/whisplay-ai-chatbot/wiki/Prebuild-Image-%E2%80%90-LLM8850)
