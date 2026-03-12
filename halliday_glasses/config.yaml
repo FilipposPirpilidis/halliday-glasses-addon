@@ -34,6 +34,12 @@ options:
   openai_transcription_model: "gpt-4o-mini-transcribe"
   openai_translation_model: "gpt-4.1-nano"
   openai_prompt: ""
+  openai_noise_reduction: "far_field"
+  openai_turn_detection: "server_vad"
+  openai_vad_threshold: 0.3
+  openai_vad_prefix_padding_ms: 500
+  openai_vad_silence_duration_ms: 800
+  openai_semantic_vad_eagerness: "low"
   whisplaybot_recognize_url: "http://192.168.2.29:8801/recognize"
   whisplaybot_timeout_seconds: 60
   whisplaybot_partial_window_seconds: 1
@@ -72,6 +78,12 @@ schema:
   openai_transcription_model: str
   openai_translation_model: str
   openai_prompt: str
+  openai_noise_reduction: str
+  openai_turn_detection: str
+  openai_vad_threshold: float
+  openai_vad_prefix_padding_ms: int
+  openai_vad_silence_duration_ms: int
+  openai_semantic_vad_eagerness: str
   whisplaybot_recognize_url: str
   whisplaybot_timeout_seconds: int
   whisplaybot_partial_window_seconds: int

@@ -124,9 +124,12 @@ class ServerConfig:
     openai_transcription_model: str
     openai_translation_model: str
     openai_prompt: str
+    openai_noise_reduction: str
+    openai_turn_detection: str
     openai_vad_threshold: float
     openai_vad_prefix_padding_ms: int
     openai_vad_silence_duration_ms: int
+    openai_semantic_vad_eagerness: str
     whisplaybot_recognize_url: str
     whisplaybot_timeout_seconds: float
     whisplaybot_partial_window_seconds: float
@@ -504,6 +507,24 @@ class OpenAIRealtimeBackend:
         self.resample_state = None
         self.receive_task = asyncio.create_task(self.receive_loop())
 
+        noise_reduction: Any = None
+        if self.cfg.openai_noise_reduction in {"near_field", "far_field"}:
+            noise_reduction = {"type": self.cfg.openai_noise_reduction}
+
+        turn_detection: Any = None
+        if self.cfg.openai_turn_detection == "server_vad":
+            turn_detection = {
+                "type": "server_vad",
+                "threshold": self.cfg.openai_vad_threshold,
+                "prefix_padding_ms": self.cfg.openai_vad_prefix_padding_ms,
+                "silence_duration_ms": self.cfg.openai_vad_silence_duration_ms,
+            }
+        elif self.cfg.openai_turn_detection == "semantic_vad":
+            turn_detection = {
+                "type": "semantic_vad",
+                "eagerness": self.cfg.openai_semantic_vad_eagerness,
+            }
+
         session_update = {
             "type": "session.update",
             "session": {
@@ -514,20 +535,13 @@ class OpenAIRealtimeBackend:
                             "type": "audio/pcm",
                             "rate": 24000,
                         },
-                        "noise_reduction": {
-                            "type": "near_field",
-                        },
+                        "noise_reduction": noise_reduction,
                         "transcription": {
                             "model": self.cfg.openai_transcription_model,
                             "prompt": self.cfg.openai_prompt,
                             "language": state.language,
                         },
-                        "turn_detection": {
-                            "type": "server_vad",
-                            "threshold": self.cfg.openai_vad_threshold,
-                            "prefix_padding_ms": self.cfg.openai_vad_prefix_padding_ms,
-                            "silence_duration_ms": self.cfg.openai_vad_silence_duration_ms,
-                        },
+                        "turn_detection": turn_detection,
                     }
                 },
                 "include": ["item.input_audio_transcription.logprobs"],
@@ -1384,9 +1398,12 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--openai-transcription-model", default="gpt-4o-mini-transcribe")
     parser.add_argument("--openai-translation-model", default="gpt-4.1-nano")
     parser.add_argument("--openai-prompt", default="")
-    parser.add_argument("--openai-vad-threshold", type=float, default=0.5)
-    parser.add_argument("--openai-vad-prefix-padding-ms", type=int, default=300)
-    parser.add_argument("--openai-vad-silence-duration-ms", type=int, default=500)
+    parser.add_argument("--openai-noise-reduction", default="far_field")
+    parser.add_argument("--openai-turn-detection", default="server_vad")
+    parser.add_argument("--openai-vad-threshold", type=float, default=0.3)
+    parser.add_argument("--openai-vad-prefix-padding-ms", type=int, default=500)
+    parser.add_argument("--openai-vad-silence-duration-ms", type=int, default=800)
+    parser.add_argument("--openai-semantic-vad-eagerness", default="low")
     parser.add_argument("--whisplay-recognize-url", default="http://192.168.2.29:8801/recognize")
     parser.add_argument("--whisplay-timeout-seconds", type=float, default=60.0)
     parser.add_argument("--whisplay-partial-window-seconds", type=float, default=2.0)
@@ -1431,9 +1448,12 @@ def parse_args() -> ServerConfig:
         openai_transcription_model=args.openai_transcription_model,
         openai_translation_model=args.openai_translation_model,
         openai_prompt=args.openai_prompt,
+        openai_noise_reduction=args.openai_noise_reduction.strip(),
+        openai_turn_detection=args.openai_turn_detection.strip(),
         openai_vad_threshold=args.openai_vad_threshold,
         openai_vad_prefix_padding_ms=args.openai_vad_prefix_padding_ms,
         openai_vad_silence_duration_ms=args.openai_vad_silence_duration_ms,
+        openai_semantic_vad_eagerness=args.openai_semantic_vad_eagerness.strip(),
         whisplaybot_recognize_url=args.whisplay_recognize_url,
         whisplaybot_timeout_seconds=args.whisplay_timeout_seconds,
         whisplaybot_partial_window_seconds=args.whisplay_partial_window_seconds,
