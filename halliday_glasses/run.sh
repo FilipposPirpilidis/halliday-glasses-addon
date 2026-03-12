@@ -13,6 +13,7 @@ MODEL_PATH="$(bashio::config 'model_path')"
 OPENAI_API_KEY="$(bashio::config 'openai_api_key')"
 OPENAI_REALTIME_MODEL="$(bashio::config 'openai_realtime_model')"
 OPENAI_TRANSCRIPTION_MODEL="$(bashio::config 'openai_transcription_model')"
+OPENAI_TRANSLATION_MODEL="$(bashio::config 'openai_translation_model')"
 OPENAI_PROMPT="$(bashio::config 'openai_prompt')"
 WHISPLAYBOT_RECOGNIZE_URL="$(bashio::config 'whisplaybot_recognize_url')"
 WHISPLAYBOT_TIMEOUT_SECONDS="$(bashio::config 'whisplaybot_timeout_seconds')"
@@ -159,18 +160,21 @@ PY
   bashio::log.warning "Internal LibreTranslate did not become ready before timeout"
 }
 
-if bashio::var.true "${TRANSLATE_ENABLED}"; then
+if bashio::var.true "${TRANSLATE_ENABLED}" && [ "${STT_BACKEND}" != "openai" ]; then
   if [ "${TRANSLATE_URL}" = "http://127.0.0.1:5000/translate" ] || [ "${TRANSLATE_URL}" = "http://localhost:5000/translate" ]; then
     start_internal_libretranslate
   else
     bashio::log.info "Using external translation endpoint ${TRANSLATE_URL}"
   fi
+elif bashio::var.true "${TRANSLATE_ENABLED}" && [ "${STT_BACKEND}" = "openai" ]; then
+  bashio::log.info "Translation enabled via OpenAI model ${OPENAI_TRANSLATION_MODEL}"
 fi
 
 if [ "${STT_BACKEND}" = "openai" ]; then
   bashio::log.info "OpenAI backend enabled"
   bashio::log.info "OpenAI realtime session model ${OPENAI_REALTIME_MODEL}"
   bashio::log.info "OpenAI transcription model ${OPENAI_TRANSCRIPTION_MODEL}"
+  bashio::log.info "OpenAI translation model ${OPENAI_TRANSLATION_MODEL}"
   exec python3 /app.py \
     --listen-host "${SERVER_HOST}" \
     --listen-port "${SERVER_PORT}" \
@@ -183,6 +187,7 @@ if [ "${STT_BACKEND}" = "openai" ]; then
     --openai-api-key "${OPENAI_API_KEY}" \
     --openai-realtime-model "${OPENAI_REALTIME_MODEL}" \
     --openai-transcription-model "${OPENAI_TRANSCRIPTION_MODEL}" \
+    --openai-translation-model "${OPENAI_TRANSLATION_MODEL}" \
     --openai-prompt "${OPENAI_PROMPT}" \
     "${TRANSLATE_ARGS[@]}"
 elif [ "${STT_BACKEND}" = "whisplaybot" ]; then

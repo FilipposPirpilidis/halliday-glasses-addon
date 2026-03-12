@@ -83,6 +83,7 @@ If `translate_url` stays on `127.0.0.1`, the add-on starts LibreTranslate inside
 - `openai_api_key`: OpenAI API key
 - `openai_realtime_model`: realtime session model, default `gpt-realtime-mini`
 - `openai_transcription_model`: transcription model, default `gpt-4o-mini-transcribe`
+- `openai_translation_model`: translation model used when `stt_backend: openai` and translation is enabled, default `gpt-4.1-nano`
 - `openai_prompt`: optional prompt
 
 ## WhisplayBot Options

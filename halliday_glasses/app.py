@@ -122,6 +122,7 @@ class ServerConfig:
     openai_api_key: str
     openai_realtime_model: str
     openai_transcription_model: str
+    openai_translation_model: str
     openai_prompt: str
     openai_vad_threshold: float
     openai_vad_prefix_padding_ms: int
@@ -169,6 +170,9 @@ class Translator:
         self.cfg = cfg
 
     async def translate(self, text: str, source: str, target: str) -> str:
+        if self.cfg.stt_backend == "openai":
+            return await self.translate_with_openai(text, source, target)
+
         payload = json.dumps(
             {
                 "q": text,
@@ -200,6 +204,59 @@ class Translator:
             raise RuntimeError(f"LibreTranslate HTTP {err.code}: {body}") from err
         except URLError as err:
             raise RuntimeError(f"LibreTranslate request failed: {err}") from err
+
+    async def translate_with_openai(self, text: str, source: str, target: str) -> str:
+        if not self.cfg.openai_api_key:
+            raise RuntimeError("OpenAI translation requires openai_api_key")
+
+        source_name = source if source and source != "auto" else "the detected source language"
+        prompt = (
+            f"Translate the following text from {source_name} to {target}. "
+            "Return only the translated text, with no explanation or extra formatting.\n\n"
+            f"{text}"
+        )
+        payload = json.dumps(
+            {
+                "model": self.cfg.openai_translation_model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                "temperature": 0,
+            }
+        ).encode("utf-8")
+        request = Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.cfg.openai_api_key}",
+            },
+            method="POST",
+        )
+
+        def _request() -> str:
+            with urlopen(request, timeout=max(self.cfg.translate_timeout_seconds, 10.0)) as response:
+                body = response.read().decode("utf-8")
+                decoded = json.loads(body)
+                choices = decoded.get("choices") or []
+                if not choices:
+                    raise RuntimeError(f"OpenAI translation response missing choices: {body}")
+                message = choices[0].get("message") or {}
+                content = (message.get("content") or "").strip()
+                if not content:
+                    raise RuntimeError(f"OpenAI translation response missing content: {body}")
+                return content
+
+        try:
+            return await asyncio.to_thread(_request)
+        except HTTPError as err:
+            body = err.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"OpenAI translation HTTP {err.code}: {body}") from err
+        except URLError as err:
+            raise RuntimeError(f"OpenAI translation request failed: {err}") from err
 
 
 class WhisplayAgent:
@@ -1325,6 +1382,7 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--openai-api-key", default="")
     parser.add_argument("--openai-realtime-model", default="gpt-realtime-mini")
     parser.add_argument("--openai-transcription-model", default="gpt-4o-mini-transcribe")
+    parser.add_argument("--openai-translation-model", default="gpt-4.1-nano")
     parser.add_argument("--openai-prompt", default="")
     parser.add_argument("--openai-vad-threshold", type=float, default=0.5)
     parser.add_argument("--openai-vad-prefix-padding-ms", type=int, default=300)
@@ -1371,6 +1429,7 @@ def parse_args() -> ServerConfig:
         openai_api_key=args.openai_api_key,
         openai_realtime_model=args.openai_realtime_model,
         openai_transcription_model=args.openai_transcription_model,
+        openai_translation_model=args.openai_translation_model,
         openai_prompt=args.openai_prompt,
         openai_vad_threshold=args.openai_vad_threshold,
         openai_vad_prefix_padding_ms=args.openai_vad_prefix_padding_ms,

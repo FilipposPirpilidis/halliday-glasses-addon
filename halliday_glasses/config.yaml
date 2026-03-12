@@ -32,6 +32,7 @@ options:
   openai_api_key: ""
   openai_realtime_model: "gpt-realtime-mini"
   openai_transcription_model: "gpt-4o-mini-transcribe"
+  openai_translation_model: "gpt-4.1-nano"
   openai_prompt: ""
   whisplaybot_recognize_url: "http://192.168.2.29:8801/recognize"
   whisplaybot_timeout_seconds: 60
@@ -69,6 +70,7 @@ schema:
   openai_api_key: str
   openai_realtime_model: str
   openai_transcription_model: str
+  openai_translation_model: str
   openai_prompt: str
   whisplaybot_recognize_url: str
   whisplaybot_timeout_seconds: int
