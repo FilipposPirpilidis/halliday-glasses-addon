@@ -564,6 +564,7 @@ final class AppState: @unchecked Sendable {
 final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
     var onPartialTranscript: ((String) -> Void)?
     var onFinalTranscript: ((String) -> Void)?
+    var onBackendMode: ((String) -> Void)?
     var onError: ((Error) -> Void)?
 
     private let scheme: String
@@ -875,6 +876,11 @@ final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate,
             onPartialTranscript?(text)
         } else if type == "transcript" {
             onFinalTranscript?(text)
+        } else if type == "backend" {
+            let mode = (data["mode"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !mode.isEmpty {
+                onBackendMode?(mode)
+            }
         } else if type == "error" {
             let message = (data["message"] as? String ?? "Unknown Halliday error").trimmingCharacters(in: .whitespacesAndNewlines)
             throw NSError(domain: "HallidayMicStreamer", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
@@ -943,6 +949,10 @@ struct HallidayMicStreamer {
 
             streamingClient.onFinalTranscript = { text in
                 print("[stt] \(text.isEmpty ? "(no text)" : text)")
+            }
+
+            streamingClient.onBackendMode = { mode in
+                print("[backend] \(mode)")
             }
 
             streamingClient.onError = { error in

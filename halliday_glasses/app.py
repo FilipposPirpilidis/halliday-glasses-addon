@@ -696,6 +696,7 @@ class HallidaySession:
         peer = self.writer.get_extra_info("peername")
         LOGGER.info("Client connected: %s", peer)
         try:
+            await self.send_backend_mode()
             while not self._closed:
                 event, payload = await read_event(self.reader)
                 await self.handle_event(event, payload)
@@ -820,6 +821,9 @@ class HallidaySession:
     async def emit_error_text(self, message: str) -> None:
         await self.send_event("error", {"message": message})
 
+    async def send_backend_mode(self) -> None:
+        await self.send_event("backend", {"mode": self.cfg.stt_backend})
+
 class WebSocketSession(HallidaySession):
     def __init__(
         self,
@@ -834,6 +838,7 @@ class WebSocketSession(HallidaySession):
         peer = getattr(self.websocket, "remote_address", None)
         LOGGER.info("WebSocket client connected: %s", peer)
         try:
+            await self.send_backend_mode()
             async for message in self.websocket:
                 event, payload = decode_websocket_event(message)
                 await self.handle_event(event, payload)

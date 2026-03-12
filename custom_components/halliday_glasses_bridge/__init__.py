@@ -118,6 +118,8 @@ class HallidayBridgeSession:
             self.send_stream_event({"type": "transcript_chunk", **data})
         elif event_type == "transcript":
             self.send_stream_event({"type": "transcript", **data})
+        elif event_type == "backend":
+            self.send_stream_event({"type": "backend", **data})
         elif event_type == "info":
             self.send_stream_event({"type": "info", **data})
         elif event_type == "error":
@@ -277,4 +279,3 @@ async def websocket_close_stream(hass: HomeAssistant, connection: ActiveConnecti
     await session.send("audio-stop", {})
     await session.close()
     connection.send_result(msg["id"])
-
