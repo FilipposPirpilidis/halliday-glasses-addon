@@ -626,6 +626,9 @@ final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate,
         guard let sessionID = response["session_id"] as? String, !sessionID.isEmpty else {
             throw AppError.missingSessionID
         }
+        if let backendMode = response["backend_mode"] as? String, !backendMode.isEmpty {
+            onBackendMode?(backendMode)
+        }
         stateQueue.sync {
             self.sessionID = sessionID
         }

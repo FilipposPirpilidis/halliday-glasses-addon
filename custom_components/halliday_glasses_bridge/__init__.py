@@ -90,6 +90,8 @@ class HallidayBridgeSession:
         self.writer: asyncio.StreamWriter | None = None
         self.read_task: asyncio.Task | None = None
         self.closed = False
+        self.backend_mode: str | None = None
+        self.backend_mode_ready = asyncio.Event()
 
     async def connect(self, language: str, codec: str, rate: int, width: int, channels: int) -> None:
         self.reader, self.writer = await asyncio.open_connection(self.upstream.host, self.upstream.port)
@@ -119,7 +121,10 @@ class HallidayBridgeSession:
         elif event_type == "transcript":
             self.send_stream_event({"type": "transcript", **data})
         elif event_type == "backend":
-            self.send_stream_event({"type": "backend", **data})
+            mode = (data.get("mode") or "").strip()
+            if mode:
+                self.backend_mode = mode
+                self.backend_mode_ready.set()
         elif event_type == "info":
             self.send_stream_event({"type": "info", **data})
         elif event_type == "error":
@@ -155,6 +160,15 @@ class HallidayBridgeSession:
                 pass
             self.writer = None
         self.reader = None
+
+    async def wait_for_backend_mode(self, timeout: float = 1.0) -> str | None:
+        if self.backend_mode:
+            return self.backend_mode
+        try:
+            await asyncio.wait_for(self.backend_mode_ready.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return self.backend_mode
+        return self.backend_mode
 
 
 def get_upstream_config(hass: HomeAssistant) -> UpstreamConfig:
@@ -238,7 +252,11 @@ async def websocket_open_stream(hass: HomeAssistant, connection: ActiveConnectio
         hass.async_create_task(cleanup())
 
     connection.subscriptions[msg["id"]] = unsubscribe
-    connection.send_result(msg["id"], {"session_id": session_id})
+    backend_mode = await session.wait_for_backend_mode()
+    result = {"session_id": session_id}
+    if backend_mode:
+        result["backend_mode"] = backend_mode
+    connection.send_result(msg["id"], result)
 
 
 @websocket_api.websocket_command(
