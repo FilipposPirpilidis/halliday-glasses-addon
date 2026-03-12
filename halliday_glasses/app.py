@@ -4,6 +4,7 @@ import audioop
 import base64
 import json
 import logging
+import re
 import struct
 from http import HTTPStatus
 from dataclasses import dataclass
@@ -19,6 +20,29 @@ from vosk import KaldiRecognizer, Model, SetLogLevel
 
 LOGGER = logging.getLogger("halliday_glasses")
 SetLogLevel(-1)
+
+NON_SPEECH_TOKENS = {
+    "applause",
+    "audio",
+    "background",
+    "beep",
+    "blank",
+    "buzz",
+    "cheering",
+    "clapping",
+    "crowd",
+    "humming",
+    "instrumental",
+    "laughter",
+    "melody",
+    "music",
+    "noise",
+    "playing",
+    "ringing",
+    "silence",
+    "singing",
+    "static",
+}
 
 
 def event_bytes(event_type: str, data: Optional[dict[str, Any]] = None, payload: bytes = b"") -> bytes:
@@ -449,6 +473,8 @@ class WhisplayBackend:
         try:
             transcript = await self.transcribe_pcm(clipped_pcm, state.rate)
             filtered = transcript.strip()
+            if should_drop_transcript_text(filtered):
+                filtered = ""
             previous = self.last_partial_text.strip()
             self.last_partial_text = filtered
             self.bytes_transcribed_for_partial = len(self.raw_pcm)
@@ -734,7 +760,7 @@ class HallidaySession:
         text = text.strip()
         if not text:
             return
-        if should_drop_final_text(text):
+        if should_drop_transcript_text(text):
             return
 
         if not self.state.translate_enabled or not self.state.translate_target:
@@ -943,7 +969,7 @@ def build_audio_decoder(codec: str) -> AudioDecoder:
     return PCM16Decoder()
 
 
-def should_drop_final_text(text: str) -> bool:
+def should_drop_transcript_text(text: str) -> bool:
     normalized = (text or "").strip().lower()
     if not normalized:
         return True
@@ -966,7 +992,25 @@ def should_drop_final_text(text: str) -> bool:
         "(static)",
         "static",
     }
-    return normalized in ignored_values
+    if normalized in ignored_values:
+        return True
+
+    stripped = normalized.strip("[](){} \t")
+    tokens = re.findall(r"[a-z']+", stripped)
+    if not tokens:
+        return True
+
+    if len(tokens) <= 6 and all(token in NON_SPEECH_TOKENS for token in tokens):
+        return True
+
+    wrapped = (
+        (normalized.startswith("[") and normalized.endswith("]"))
+        or (normalized.startswith("(") and normalized.endswith(")"))
+    )
+    if wrapped and len(tokens) <= 8 and all(token in NON_SPEECH_TOKENS for token in tokens):
+        return True
+
+    return False
 
 
 async def serve(cfg: ServerConfig) -> None:
