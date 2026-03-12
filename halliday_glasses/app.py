@@ -6,12 +6,10 @@ import json
 import logging
 import re
 import struct
-from http import HTTPStatus
 from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import quote
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
 import websockets
 from websockets.exceptions import ConnectionClosed
 from opuslib import Decoder as OpusDecoder
@@ -122,7 +120,6 @@ class ServerConfig:
     openai_api_key: str
     openai_realtime_model: str
     openai_transcription_model: str
-    openai_translation_model: str
     openai_prompt: str
     assemblyai_api_key: str
     assemblyai_speech_model: str
@@ -133,11 +130,6 @@ class ServerConfig:
     whisplaybot_auto_final_silence_ms: int
     whisplaybot_auto_final_min_seconds: float
     whisplaybot_auto_final_silence_level: int
-    translate_url: str
-    translate_pairs: tuple[str, ...]
-    translate_source: str
-    translate_target: str
-    translate_timeout_seconds: float
 
 
 @dataclass(slots=True)
@@ -148,106 +140,9 @@ class AudioState:
     codec: str = "pcm16"
     language: str = "en"
     chunks: bytearray | None = None
-    translate_pairs: tuple[str, ...] = ()
-    translate_source: str = "auto"
-    translate_target: str = ""
 
     def reset(self) -> None:
         self.chunks = bytearray()
-
-
-class Translator:
-    def __init__(self, cfg: ServerConfig):
-        self.cfg = cfg
-
-    async def translate(self, text: str, source: str, target: str) -> str:
-        if self.cfg.stt_backend == "openai":
-            return await self.translate_with_openai(text, source, target)
-
-        payload = json.dumps(
-            {
-                "q": text,
-                "source": source,
-                "target": target,
-                "format": "text",
-            }
-        ).encode("utf-8")
-        request = Request(
-            self.cfg.translate_url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
-        def _request() -> str:
-            with urlopen(request, timeout=max(self.cfg.translate_timeout_seconds, 5.0)) as response:
-                body = response.read().decode("utf-8")
-                decoded = json.loads(body)
-                translated = (decoded.get("translatedText") or "").strip()
-                if not translated:
-                    raise RuntimeError(f"Translation response missing translatedText: {body}")
-                return translated
-
-        try:
-            return await asyncio.to_thread(_request)
-        except HTTPError as err:
-            body = err.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"LibreTranslate HTTP {err.code}: {body}") from err
-        except URLError as err:
-            raise RuntimeError(f"LibreTranslate request failed: {err}") from err
-
-    async def translate_with_openai(self, text: str, source: str, target: str) -> str:
-        if not self.cfg.openai_api_key:
-            raise RuntimeError("OpenAI translation requires openai_api_key")
-
-        source_name = source if source and source != "auto" else "the detected source language"
-        prompt = (
-            f"Translate the following text from {source_name} to {target}. "
-            "Return only the translated text, with no explanation or extra formatting.\n\n"
-            f"{text}"
-        )
-        payload = json.dumps(
-            {
-                "model": self.cfg.openai_translation_model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-                "temperature": 0,
-            }
-        ).encode("utf-8")
-        request = Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.cfg.openai_api_key}",
-            },
-            method="POST",
-        )
-
-        def _request() -> str:
-            with urlopen(request, timeout=max(self.cfg.translate_timeout_seconds, 10.0)) as response:
-                body = response.read().decode("utf-8")
-                decoded = json.loads(body)
-                choices = decoded.get("choices") or []
-                if not choices:
-                    raise RuntimeError(f"OpenAI translation response missing choices: {body}")
-                message = choices[0].get("message") or {}
-                content = (message.get("content") or "").strip()
-                if not content:
-                    raise RuntimeError(f"OpenAI translation response missing content: {body}")
-                return content
-
-        try:
-            return await asyncio.to_thread(_request)
-        except HTTPError as err:
-            body = err.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenAI translation HTTP {err.code}: {body}") from err
-        except URLError as err:
-            raise RuntimeError(f"OpenAI translation request failed: {err}") from err
 
 
 class AudioDecoder:
@@ -786,17 +681,12 @@ class HallidaySession:
         writer: asyncio.StreamWriter,
         cfg: ServerConfig,
         vosk_model: Optional[Model],
-        translator: Translator,
     ):
         self.reader = reader
         self.writer = writer
         self.cfg = cfg
         self.vosk_model = vosk_model
-        self.translator = translator
         self.state = AudioState(language=cfg.language)
-        self.state.translate_pairs = cfg.translate_pairs
-        self.state.translate_source = ""
-        self.state.translate_target = ""
         self._closed = False
         self.backend = None
         self.decoder: AudioDecoder = PCM16Decoder()
@@ -846,13 +736,6 @@ class HallidaySession:
                             "version": "1.0.0",
                         }
                     ],
-                    "translation": {
-                        "enabled": self.translation_active(),
-                        "pairs": list(self.state.translate_pairs),
-                        "pair": self.current_translation_pair(),
-                        "source": self.state.translate_source,
-                        "target": self.state.translate_target,
-                    },
                 },
             )
             return
@@ -861,28 +744,6 @@ class HallidaySession:
             language = (data.get("language") or "").strip()
             if language:
                 self.state.language = language
-            return
-
-        if event_type == "translate-get":
-            await self.send_translation_config()
-            return
-
-        if event_type == "translate-set":
-            pair = (data.get("pair") or "").strip()
-            source = normalize_language_code((data.get("source") or "").strip())
-            target = normalize_language_code((data.get("target") or "").strip())
-            if pair:
-                source, target = split_translation_pair(pair)
-            selected_pair = f"{source}-{target}" if source and target else ""
-            if selected_pair:
-                if self.state.translate_pairs and selected_pair not in self.state.translate_pairs:
-                    raise RuntimeError(f"Translation pair '{selected_pair}' is not allowed")
-                self.state.translate_source = source
-                self.state.translate_target = target
-            else:
-                self.state.translate_source = ""
-                self.state.translate_target = ""
-            await self.send_translation_config()
             return
 
         if event_type == "audio-start":
@@ -954,64 +815,10 @@ class HallidaySession:
             return
         if should_drop_transcript_text(text):
             return
-        await self._emit_transcript_result(text)
-
-    async def _emit_transcript_result(self, text: str, allow_translation: bool = True) -> None:
-        if not allow_translation or not self.translation_active():
-            await self.send_event("transcript", {"text": text})
-            return
-
-        try:
-            translated = await self.translator.translate(
-                text,
-                self.state.translate_source or "auto",
-                self.state.translate_target,
-            )
-            await self.send_event(
-                "transcript",
-                {
-                    "text": translated,
-                    "original_text": text,
-                    "translated": True,
-                    "source_language": self.state.translate_source or "auto",
-                    "target_language": self.state.translate_target,
-                },
-            )
-        except Exception as err:
-            LOGGER.exception("Translation failed")
-            await self.send_event(
-                "transcript",
-                {
-                    "text": text,
-                    "translation_error": str(err),
-                    "translated": False,
-                },
-            )
+        await self.send_event("transcript", {"text": text})
 
     async def emit_error_text(self, message: str) -> None:
         await self.send_event("error", {"message": message})
-
-    async def send_translation_config(self) -> None:
-        await self.send_event(
-            "translate-config",
-            {
-                "enabled": self.translation_active(),
-                "pairs": list(self.state.translate_pairs),
-                "pair": self.current_translation_pair(),
-                "source": self.state.translate_source,
-                "target": self.state.translate_target,
-            },
-        )
-
-    def current_translation_pair(self) -> str:
-        source = (self.state.translate_source or "").strip()
-        target = (self.state.translate_target or "").strip()
-        if not source or not target:
-            return ""
-        return f"{source}-{target}"
-
-    def translation_active(self) -> bool:
-        return bool(self.current_translation_pair())
 
 class WebSocketSession(HallidaySession):
     def __init__(
@@ -1019,10 +826,9 @@ class WebSocketSession(HallidaySession):
         websocket,
         cfg: ServerConfig,
         vosk_model: Optional[Model],
-        translator: Translator,
     ):
         self.websocket = websocket
-        super().__init__(None, None, cfg, vosk_model, translator)
+        super().__init__(None, None, cfg, vosk_model)
 
     async def run(self) -> None:
         peer = getattr(self.websocket, "remote_address", None)
@@ -1076,58 +882,6 @@ def decode_websocket_event(message: Any) -> tuple[dict[str, Any], bytes]:
         payload = base64.b64decode(encoded)
 
     return {"type": event.get("type"), "data": data}, payload
-
-
-def split_translation_pair(pair: str) -> tuple[str, str]:
-    normalized = pair.strip().replace("->", "-").replace("_", "-")
-    source, _, target = normalized.partition("-")
-    return normalize_language_code(source), normalize_language_code(target)
-
-
-def normalize_language_code(value: str) -> str:
-    raw = (value or "").strip().lower().replace("_", "-")
-    if not raw:
-        return ""
-    first_line = raw.splitlines()[0].strip()
-    first_token = first_line.split()[0] if first_line else ""
-    if not first_token:
-        return ""
-    if first_token == "auto":
-        return "auto"
-    return first_token.split("-")[0].strip()
-
-
-def parse_translation_pairs(raw_value: str) -> tuple[str, ...]:
-    raw_value = (raw_value or "").strip()
-    if not raw_value:
-        return ()
-
-    values: list[str]
-    if raw_value.startswith("["):
-        try:
-            decoded = json.loads(raw_value)
-        except json.JSONDecodeError:
-            decoded = []
-        values = [str(item).strip() for item in decoded if str(item).strip()]
-    else:
-        normalized = raw_value.replace("\r", "\n")
-        values = []
-        for chunk in normalized.replace(",", "\n").split("\n"):
-            item = chunk.strip()
-            if not item:
-                continue
-            if item.startswith("-"):
-                item = item[1:].strip()
-            item = item.strip("\"'")
-            if item:
-                values.append(item)
-
-    pairs: list[str] = []
-    for value in values:
-        source, target = split_translation_pair(value)
-        if source and target:
-            pairs.append(f"{source}-{target}")
-    return tuple(dict.fromkeys(pairs))
 
 
 def normalize_codec_name(value: str) -> str:
@@ -1245,17 +999,8 @@ def looks_like_sentence(normalized: str, tokens: list[str]) -> bool:
     return True
 
 
-def normalize_cleanup_text(text: str) -> str:
-    raw = text or ""
-    raw = re.sub(r"<think\b[^>]*>.*?</think>", " ", raw, flags=re.IGNORECASE | re.DOTALL)
-    raw = re.sub(r"</?think\b[^>]*>", " ", raw, flags=re.IGNORECASE)
-    normalized = " ".join(raw.strip().split())
-    return normalized.strip(" \"'")
-
-
 async def serve(cfg: ServerConfig) -> None:
     vosk_model = None
-    translator = Translator(cfg)
     if cfg.stt_backend == "vosk":
         LOGGER.info("Loading Vosk model from %s", cfg.model_path)
         vosk_model = Model(cfg.model_path)
@@ -1275,14 +1020,14 @@ async def serve(cfg: ServerConfig) -> None:
         LOGGER.info("WhisplayBot backend enabled with recognize URL %s", cfg.whisplaybot_recognize_url)
 
     async def on_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        session = HallidaySession(reader, writer, cfg, vosk_model, translator)
+        session = HallidaySession(reader, writer, cfg, vosk_model)
         await session.run()
 
     async def on_websocket_connect(websocket) -> None:
         if getattr(websocket, "path", "") not in {"", "/", "/ws"}:
             await websocket.close(code=1008, reason="Unsupported path")
             return
-        session = WebSocketSession(websocket, cfg, vosk_model, translator)
+        session = WebSocketSession(websocket, cfg, vosk_model)
         await session.run()
 
     server = await asyncio.start_server(on_connect, cfg.listen_host, cfg.listen_port)
@@ -1315,7 +1060,6 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--openai-api-key", default="")
     parser.add_argument("--openai-realtime-model", default="gpt-realtime-mini")
     parser.add_argument("--openai-transcription-model", default="gpt-4o-mini-transcribe")
-    parser.add_argument("--openai-translation-model", default="gpt-4.1-nano")
     parser.add_argument("--openai-prompt", default="")
     parser.add_argument("--assemblyai-api-key", default="")
     parser.add_argument("--assemblyai-speech-model", default="universal-streaming-english")
@@ -1326,12 +1070,8 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--whisplay-auto-final-silence-ms", type=int, default=900)
     parser.add_argument("--whisplay-auto-final-min-seconds", type=float, default=0.8)
     parser.add_argument("--whisplay-auto-final-silence-level", type=int, default=700)
-    parser.add_argument("--translate-url", default="http://127.0.0.1:5000/translate")
-    parser.add_argument("--translate-pairs", default='["en-el","el-en","en-de","de-en","en-fr","fr-en"]')
-    parser.add_argument("--translate-timeout-seconds", type=float, default=30.0)
     args = parser.parse_args()
     accepted_audio_codecs = parse_audio_codecs(args.accepted_audio_codecs)
-    translate_pairs = parse_translation_pairs(args.translate_pairs)
 
     return ServerConfig(
         listen_host=args.listen_host,
@@ -1345,7 +1085,6 @@ def parse_args() -> ServerConfig:
         openai_api_key=args.openai_api_key,
         openai_realtime_model=args.openai_realtime_model,
         openai_transcription_model=args.openai_transcription_model,
-        openai_translation_model=args.openai_translation_model,
         openai_prompt=args.openai_prompt,
         assemblyai_api_key=args.assemblyai_api_key,
         assemblyai_speech_model=args.assemblyai_speech_model.strip(),
@@ -1356,11 +1095,6 @@ def parse_args() -> ServerConfig:
         whisplaybot_auto_final_silence_ms=args.whisplay_auto_final_silence_ms,
         whisplaybot_auto_final_min_seconds=args.whisplay_auto_final_min_seconds,
         whisplaybot_auto_final_silence_level=args.whisplay_auto_final_silence_level,
-        translate_url=args.translate_url,
-        translate_pairs=translate_pairs,
-        translate_source="",
-        translate_target="",
-        translate_timeout_seconds=args.translate_timeout_seconds,
     )
 
 

@@ -13,7 +13,6 @@ MODEL_PATH="$(bashio::config 'model_path')"
 OPENAI_API_KEY="$(bashio::config 'openai_api_key')"
 OPENAI_REALTIME_MODEL="$(bashio::config 'openai_realtime_model')"
 OPENAI_TRANSCRIPTION_MODEL="$(bashio::config 'openai_transcription_model')"
-OPENAI_TRANSLATION_MODEL="$(bashio::config 'openai_translation_model')"
 OPENAI_PROMPT="$(bashio::config 'openai_prompt')"
 ASSEMBLYAI_API_KEY="$(bashio::config 'assemblyai_api_key')"
 ASSEMBLYAI_SPEECH_MODEL="$(bashio::config 'assemblyai_speech_model')"
@@ -24,11 +23,6 @@ WHISPLAYBOT_PARTIAL_INFERENCE_SECONDS="$(bashio::config 'whisplaybot_partial_inf
 WHISPLAYBOT_AUTO_FINAL_SILENCE_MS="$(bashio::config 'whisplaybot_auto_final_silence_ms')"
 WHISPLAYBOT_AUTO_FINAL_MIN_SECONDS="$(bashio::config 'whisplaybot_auto_final_min_seconds')"
 WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL="$(bashio::config 'whisplaybot_auto_final_silence_level')"
-TRANSLATE_URL="$(bashio::config 'translate_url')"
-TRANSLATE_PAIRS="$(bashio::config 'translate_pairs')"
-TRANSLATE_TIMEOUT_SECONDS="$(bashio::config 'translate_timeout_seconds')"
-LIBRETRANSLATE_HOST="127.0.0.1"
-LIBRETRANSLATE_PORT="5000"
 
 case "${MODEL_VARIANT}" in
   "0.15")
@@ -54,113 +48,16 @@ bashio::log.info "Listening on ${SERVER_HOST}:${SERVER_PORT}"
 bashio::log.info "WebSocket ingress bridge on ${WEBSOCKET_HOST}:${WEBSOCKET_PORT}/ws"
 bashio::log.info "Accepted audio codecs ${ACCEPTED_AUDIO_CODECS}"
 bashio::log.info "Using STT backend ${STT_BACKEND}"
-if [ "${STT_BACKEND}" = "openai" ]; then
-  bashio::log.info "Translation available via OpenAI model ${OPENAI_TRANSLATION_MODEL}"
-else
-  bashio::log.info "Translation available via ${TRANSLATE_URL}"
-fi
-bashio::log.info "Translation is available; active pair must be set by the client"
-
-TRANSLATE_ARGS=(
-  --translate-url "${TRANSLATE_URL}"
-  --translate-pairs "${TRANSLATE_PAIRS}"
-  --translate-timeout-seconds "${TRANSLATE_TIMEOUT_SECONDS}"
-)
+bashio::log.info "Transcription-only mode enabled"
 
 cleanup() {
-  if [ -n "${LIBRETRANSLATE_PID:-}" ]; then
-    kill "${LIBRETRANSLATE_PID}" 2>/dev/null || true
-  fi
+  true
 }
-
-start_internal_libretranslate() {
-  export XDG_DATA_HOME=/data
-  mkdir -p /data/argos-translate
-
-  python3 - <<'PY'
-import json
-import os
-import re
-
-import argostranslate.package as package
-
-DEFAULT_PAIRS = ["en-el", "el-en", "en-de", "de-en", "en-fr", "fr-en"]
-PAIR_RE = re.compile(r"^[a-z]{2,3}-[a-z]{2,3}$")
-configured_pairs = []
-options_path = "/data/options.json"
-if os.path.exists(options_path):
-    with open(options_path, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    raw_pairs = data.get("translate_pairs")
-    if isinstance(raw_pairs, list):
-        configured_pairs = raw_pairs
-
-pairs = []
-for pair in configured_pairs:
-    if not isinstance(pair, str):
-        continue
-    normalized = pair.strip().lower().replace("_", "-")
-    if PAIR_RE.match(normalized):
-        pairs.append(normalized)
-
-if not pairs:
-    pairs = DEFAULT_PAIRS
-
-seen = set()
-pairs = [pair for pair in pairs if not (pair in seen or seen.add(pair))]
-print(f"[halliday_glasses] LibreTranslate requested pairs: {pairs}")
-
-installed = {(pkg.from_code, pkg.to_code) for pkg in package.get_installed_packages()}
-missing = []
-for pair in pairs:
-    src, dst = pair.split("-")
-    if (src, dst) not in installed:
-        missing.append((src, dst))
-
-if missing:
-    print(f"[halliday_glasses] LibreTranslate missing models: {missing}")
-    package.update_package_index()
-    available = {(pkg.from_code, pkg.to_code): pkg for pkg in package.get_available_packages()}
-    for src, dst in missing:
-        selected = available.get((src, dst))
-        if selected is None:
-            print(f"[halliday_glasses] LibreTranslate model not found: {src}->{dst}")
-            continue
-        print(f"[halliday_glasses] Installing LibreTranslate model: {src}->{dst}")
-        package.install_from_path(selected.download())
-else:
-    print("[halliday_glasses] LibreTranslate models already installed")
-PY
-
-  bashio::log.info "Starting internal LibreTranslate on ${LIBRETRANSLATE_HOST}:${LIBRETRANSLATE_PORT}"
-  libretranslate --host "${LIBRETRANSLATE_HOST}" --port "${LIBRETRANSLATE_PORT}" &
-  LIBRETRANSLATE_PID=$!
-  trap cleanup EXIT INT TERM
-
-  for _ in $(seq 1 60); do
-    if curl --silent --fail "http://${LIBRETRANSLATE_HOST}:${LIBRETRANSLATE_PORT}/languages" >/dev/null 2>&1; then
-      bashio::log.info "Internal LibreTranslate is ready"
-      return
-    fi
-    sleep 1
-  done
-
-  bashio::log.warning "Internal LibreTranslate did not become ready before timeout"
-}
-
-if [ "${STT_BACKEND}" != "openai" ]; then
-  if [ "${TRANSLATE_URL}" = "http://127.0.0.1:5000/translate" ] || [ "${TRANSLATE_URL}" = "http://localhost:5000/translate" ]; then
-    start_internal_libretranslate
-  else
-    bashio::log.info "Using external translation endpoint ${TRANSLATE_URL}"
-  fi
-fi
 
 if [ "${STT_BACKEND}" = "openai" ]; then
   bashio::log.info "OpenAI backend enabled"
   bashio::log.info "OpenAI realtime session model ${OPENAI_REALTIME_MODEL}"
   bashio::log.info "OpenAI transcription model ${OPENAI_TRANSCRIPTION_MODEL}"
-  bashio::log.info "OpenAI translation model ${OPENAI_TRANSLATION_MODEL}"
   exec python3 /app.py \
     --listen-host "${SERVER_HOST}" \
     --listen-port "${SERVER_PORT}" \
@@ -173,9 +70,7 @@ if [ "${STT_BACKEND}" = "openai" ]; then
     --openai-api-key "${OPENAI_API_KEY}" \
     --openai-realtime-model "${OPENAI_REALTIME_MODEL}" \
     --openai-transcription-model "${OPENAI_TRANSCRIPTION_MODEL}" \
-    --openai-translation-model "${OPENAI_TRANSLATION_MODEL}" \
-    --openai-prompt "${OPENAI_PROMPT}" \
-    "${TRANSLATE_ARGS[@]}"
+    --openai-prompt "${OPENAI_PROMPT}"
 elif [ "${STT_BACKEND}" = "whisplaybot" ]; then
   bashio::log.info "WhisplayBot backend enabled"
   bashio::log.info "WhisplayBot recognize URL ${WHISPLAYBOT_RECOGNIZE_URL}"
@@ -194,8 +89,7 @@ elif [ "${STT_BACKEND}" = "whisplaybot" ]; then
     --whisplay-partial-inference-seconds "${WHISPLAYBOT_PARTIAL_INFERENCE_SECONDS}" \
     --whisplay-auto-final-silence-ms "${WHISPLAYBOT_AUTO_FINAL_SILENCE_MS}" \
     --whisplay-auto-final-min-seconds "${WHISPLAYBOT_AUTO_FINAL_MIN_SECONDS}" \
-    --whisplay-auto-final-silence-level "${WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL}" \
-    "${TRANSLATE_ARGS[@]}"
+    --whisplay-auto-final-silence-level "${WHISPLAYBOT_AUTO_FINAL_SILENCE_LEVEL}"
 elif [ "${STT_BACKEND}" = "assemblyai" ]; then
   bashio::log.info "AssemblyAI backend enabled"
   bashio::log.info "AssemblyAI speech model ${ASSEMBLYAI_SPEECH_MODEL}"
@@ -209,8 +103,7 @@ elif [ "${STT_BACKEND}" = "assemblyai" ]; then
     --stt-backend "${STT_BACKEND}" \
     --model-path "${RESOLVED_MODEL_PATH}" \
     --assemblyai-api-key "${ASSEMBLYAI_API_KEY}" \
-    --assemblyai-speech-model "${ASSEMBLYAI_SPEECH_MODEL}" \
-    "${TRANSLATE_ARGS[@]}"
+    --assemblyai-speech-model "${ASSEMBLYAI_SPEECH_MODEL}"
 else
   bashio::log.info "Using Vosk backend"
   bashio::log.info "Using Vosk model variant ${MODEL_VARIANT}"
@@ -223,6 +116,5 @@ else
     --accepted-audio-codecs "${ACCEPTED_AUDIO_CODECS}" \
     --language "${LANGUAGE}" \
     --stt-backend "vosk" \
-    --model-path "${RESOLVED_MODEL_PATH}" \
-    "${TRANSLATE_ARGS[@]}"
+    --model-path "${RESOLVED_MODEL_PATH}"
 fi

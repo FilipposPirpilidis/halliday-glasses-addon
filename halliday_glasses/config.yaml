@@ -1,7 +1,7 @@
 name: "Halliday Glasses"
 version: "1.0.0"
 slug: "halliday_glasses"
-description: "Wyoming speech-to-text add-on for Halliday Glasses with Vosk, OpenAI, WhisplayBot, and optional LibreTranslate final-text translation."
+description: "Wyoming speech-to-text add-on for Halliday Glasses with Vosk, OpenAI, WhisplayBot, and AssemblyAI."
 url: "https://github.com/FilipposPirpilidis/halliday-glasses-addon"
 arch:
   - amd64
@@ -32,7 +32,6 @@ options:
   openai_api_key: ""
   openai_realtime_model: "gpt-realtime-mini"
   openai_transcription_model: "gpt-4o-mini-transcribe"
-  openai_translation_model: "gpt-4.1-nano"
   openai_prompt: ""
   assemblyai_api_key: ""
   assemblyai_speech_model: "universal-streaming-english"
@@ -43,15 +42,6 @@ options:
   whisplaybot_auto_final_silence_ms: 1400
   whisplaybot_auto_final_min_seconds: 3
   whisplaybot_auto_final_silence_level: 900
-  translate_url: "http://127.0.0.1:5000/translate"
-  translate_pairs:
-    - "en-el"
-    - "el-en"
-    - "en-de"
-    - "de-en"
-    - "en-fr"
-    - "fr-en"
-  translate_timeout_seconds: 30
 schema:
   server_host: str
   server_port: port
@@ -64,7 +54,6 @@ schema:
   openai_api_key: str
   openai_realtime_model: str
   openai_transcription_model: str
-  openai_translation_model: str
   openai_prompt: str
   assemblyai_api_key: str
   assemblyai_speech_model: str
@@ -75,7 +64,3 @@ schema:
   whisplaybot_auto_final_silence_ms: int
   whisplaybot_auto_final_min_seconds: int
   whisplaybot_auto_final_silence_level: int
-  translate_url: str
-  translate_pairs:
-    - str
-  translate_timeout_seconds: int

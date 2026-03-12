@@ -27,8 +27,6 @@ struct CLIOptions {
     var codec: String = "pcm16"
     var language: String = "en"
     var haToken: String? = ProcessInfo.processInfo.environment["HA_TOKEN"]
-    var translateSource: String?
-    var translateTarget: String?
 
     static func parse(from args: [String]) throws -> CLIOptions {
         var options = CLIOptions()
@@ -62,14 +60,6 @@ struct CLIOptions {
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--ha-token") }
                 options.haToken = args[index]
-            case "--translate-source":
-                index += 1
-                guard index < args.count else { throw CLIError.missingValue("--translate-source") }
-                options.translateSource = args[index]
-            case "--translate-target":
-                index += 1
-                guard index < args.count else { throw CLIError.missingValue("--translate-target") }
-                options.translateTarget = args[index]
             case "-h", "--help":
                 printUsageAndExit()
             default:
@@ -147,14 +137,6 @@ enum AppError: Error, CustomStringConvertible {
             return "Home Assistant did not return a session_id"
         }
     }
-}
-
-struct TranslationConfig {
-    let enabled: Bool
-    let source: String
-    let target: String
-    let pair: String
-    let pairs: [String]
 }
 
 final class ConverterInputState: @unchecked Sendable {
@@ -581,8 +563,7 @@ final class AppState: @unchecked Sendable {
 
 final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
     var onPartialTranscript: ((String) -> Void)?
-    var onFinalTranscript: ((String, String?, Bool) -> Void)?
-    var onTranslationConfig: ((TranslationConfig) -> Void)?
+    var onFinalTranscript: ((String) -> Void)?
     var onError: ((Error) -> Void)?
 
     private let scheme: String
@@ -683,44 +664,6 @@ final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate,
                     type: "halliday_glasses_bridge/close_stream",
                     payload: ["session_id": sessionID]
                 )
-            } catch {
-                self.fail(error)
-            }
-        }
-    }
-
-    func requestTranslationConfig() {
-        writeQueue.async { [weak self] in
-            guard let self else { return }
-            do {
-                guard let sessionID = self.stateQueue.sync(execute: { self.sessionID }) else {
-                    throw AppError.missingSessionID
-                }
-                try self.sendCommandAsync(
-                    type: "halliday_glasses_bridge/translate_get",
-                    payload: ["session_id": sessionID]
-                )
-            } catch {
-                self.fail(error)
-            }
-        }
-    }
-
-    func updateTranslationConfig(source: String? = nil, target: String? = nil) {
-        writeQueue.async { [weak self] in
-            guard let self else { return }
-            do {
-                guard let sessionID = self.stateQueue.sync(execute: { self.sessionID }) else {
-                    throw AppError.missingSessionID
-                }
-                var data: [String: Any] = ["session_id": sessionID]
-                if let source, !source.isEmpty {
-                    data["source"] = source
-                }
-                if let target, !target.isEmpty {
-                    data["target"] = target
-                }
-                try self.sendCommandAsync(type: "halliday_glasses_bridge/translate_set", payload: data)
             } catch {
                 self.fail(error)
             }
@@ -931,18 +874,7 @@ final class HomeAssistantWebSocketClient: NSObject, URLSessionWebSocketDelegate,
         if type == "transcript_chunk", !text.isEmpty {
             onPartialTranscript?(text)
         } else if type == "transcript" {
-            let originalText = (data["original_text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let translated = (data["translated"] as? Bool) ?? false
-            onFinalTranscript?(text, originalText, translated)
-        } else if type == "translate_config" {
-            let config = TranslationConfig(
-                enabled: (data["enabled"] as? Bool) ?? false,
-                source: (data["source"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                target: (data["target"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                pair: (data["pair"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                pairs: data["pairs"] as? [String] ?? []
-            )
-            onTranslationConfig?(config)
+            onFinalTranscript?(text)
         } else if type == "error" {
             let message = (data["message"] as? String ?? "Unknown Halliday error").trimmingCharacters(in: .whitespacesAndNewlines)
             throw NSError(domain: "HallidayMicStreamer", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
@@ -969,9 +901,8 @@ func requestMicrophonePermission() -> Bool {
 }
 
 func printUsageAndExit() -> Never {
-    print("Usage: halliday-mic-streamer [--scheme ws|wss] [--host HOST] [--port PORT] [--codec pcm16|opus] --ha-token TOKEN [--language LANG] [--translate-source LANG] [--translate-target LANG]")
+    print("Usage: halliday-mic-streamer [--scheme ws|wss] [--host HOST] [--port PORT] [--codec pcm16|opus] --ha-token TOKEN [--language LANG]")
     print("  Default target: ws://homeassistant.local:8123/api/websocket")
-    print("  Translation is enabled only when both --translate-source and --translate-target are provided.")
     exit(0)
 }
 
@@ -995,14 +926,6 @@ struct HallidayMicStreamer {
             print("Streaming microphone audio continuously. Press ESC to quit.")
             print("Target: \(options.scheme)://\(options.host):\(options.port)")
             print("Audio codec: \(options.codec)")
-            let hasRequestedPair = options.translateSource != nil && options.translateTarget != nil
-            let shouldEnableTranslation = hasRequestedPair
-            print("Requested translation: \(shouldEnableTranslation ? "enabled" : "disabled")")
-            if let translateSource = options.translateSource, let translateTarget = options.translateTarget {
-                print("Requested translation pair: \(translateSource)-\(translateTarget)")
-            } else {
-                print("Requested translation pair: none")
-            }
 
             let streamingClient = HomeAssistantWebSocketClient(
                 scheme: options.scheme,
@@ -1018,19 +941,8 @@ struct HallidayMicStreamer {
                 print("[partial] \(text)")
             }
 
-            streamingClient.onFinalTranscript = { text, originalText, translated in
-                if translated, let originalText, !originalText.isEmpty {
-                    print("[stt] \(text.isEmpty ? "(no text)" : text)")
-                    print("[orig] \(originalText)")
-                } else {
-                    print("[stt] \(text.isEmpty ? "(no text)" : text)")
-                }
-            }
-
-            streamingClient.onTranslationConfig = { config in
-                let pair = config.pair.isEmpty ? "\(config.source)-\(config.target)" : config.pair
-                let pairs = config.pairs.isEmpty ? "(any)" : config.pairs.joined(separator: ", ")
-                print("[translate] \(config.enabled ? "on" : "off") pair=\(pair) allowed=\(pairs)")
+            streamingClient.onFinalTranscript = { text in
+                print("[stt] \(text.isEmpty ? "(no text)" : text)")
             }
 
             streamingClient.onError = { error in
@@ -1043,13 +955,6 @@ struct HallidayMicStreamer {
             try streamingClient.start()
             stateQueue.sync {
                 appState.client = streamingClient
-            }
-            streamingClient.requestTranslationConfig()
-            if shouldEnableTranslation {
-                streamingClient.updateTranslationConfig(
-                    source: options.translateSource,
-                    target: options.translateTarget
-                )
             }
             print("[rec] LIVE")
             recorder.start { chunk in

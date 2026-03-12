@@ -118,8 +118,6 @@ class HallidayBridgeSession:
             self.send_stream_event({"type": "transcript_chunk", **data})
         elif event_type == "transcript":
             self.send_stream_event({"type": "transcript", **data})
-        elif event_type == "translate-config":
-            self.send_stream_event({"type": "translate_config", **data})
         elif event_type == "info":
             self.send_stream_event({"type": "info", **data})
         elif event_type == "error":
@@ -207,8 +205,6 @@ def _register_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_open_stream)
     websocket_api.async_register_command(hass, websocket_audio_chunk)
     websocket_api.async_register_command(hass, websocket_close_stream)
-    websocket_api.async_register_command(hass, websocket_translate_get)
-    websocket_api.async_register_command(hass, websocket_translate_set)
     hass.data[DOMAIN][DATA_COMMANDS_REGISTERED] = True
 
 
@@ -221,8 +217,6 @@ def _register_commands(hass: HomeAssistant) -> None:
         vol.Optional("rate", default=16000): int,
         vol.Optional("width", default=2): int,
         vol.Optional("channels", default=1): int,
-        vol.Optional("translate_source"): str,
-        vol.Optional("translate_target"): str,
     }
 )
 @websocket_api.async_response
@@ -242,16 +236,6 @@ async def websocket_open_stream(hass: HomeAssistant, connection: ActiveConnectio
         hass.async_create_task(cleanup())
 
     connection.subscriptions[msg["id"]] = unsubscribe
-
-    if "translate_source" in msg or "translate_target" in msg:
-        await session.send(
-            "translate-set",
-            {
-                "source": msg.get("translate_source", ""),
-                "target": msg.get("translate_target", ""),
-            },
-        )
-    await session.send("translate-get", {})
     connection.send_result(msg["id"], {"session_id": session_id})
 
 
@@ -294,43 +278,3 @@ async def websocket_close_stream(hass: HomeAssistant, connection: ActiveConnecti
     await session.close()
     connection.send_result(msg["id"])
 
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("id"): int,
-        vol.Required("type"): f"{DOMAIN}/translate_get",
-        vol.Required("session_id"): str,
-    }
-)
-@websocket_api.async_response
-async def websocket_translate_get(hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]) -> None:
-    session: HallidayBridgeSession | None = hass.data[DOMAIN][DATA_SESSIONS].get(msg["session_id"])
-    if session is None:
-        connection.send_error(msg["id"], "not_found", "Unknown session_id")
-        return
-    await session.send("translate-get", {})
-    connection.send_result(msg["id"])
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("id"): int,
-        vol.Required("type"): f"{DOMAIN}/translate_set",
-        vol.Required("session_id"): str,
-        vol.Optional("source"): str,
-        vol.Optional("target"): str,
-        vol.Optional("pair"): str,
-    }
-)
-@websocket_api.async_response
-async def websocket_translate_set(hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]) -> None:
-    session: HallidayBridgeSession | None = hass.data[DOMAIN][DATA_SESSIONS].get(msg["session_id"])
-    if session is None:
-        connection.send_error(msg["id"], "not_found", "Unknown session_id")
-        return
-    payload: dict[str, Any] = {}
-    for key in ("source", "target", "pair"):
-        if key in msg:
-            payload[key] = msg[key]
-    await session.send("translate-set", payload)
-    connection.send_result(msg["id"])

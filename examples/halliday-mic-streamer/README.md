@@ -6,8 +6,7 @@ macOS console application that:
 - converts it to PCM16 mono at 16 kHz or encodes Opus at 16 kHz mono
 - connects to Home Assistant `/api/websocket`
 - streams live microphone audio continuously while running
-- prints `transcript-chunk` and final `transcript` responses
-- can enable or disable translation and set source/target languages from the client
+- prints `transcript_chunk` and final `transcript` responses
 
 ## Build
 
@@ -32,22 +31,6 @@ Optional flags:
 - `--codec pcm16|opus`
 - `--language en`
 - `--ha-token <token>` or `HA_TOKEN=...`
-- `--translate-source en`
-- `--translate-target el`
-
-Translation is enabled only when both `--translate-source` and `--translate-target` are provided. If no pair is provided, the client stays in transcription-only mode.
-
-Example with translation enabled:
-
-```bash
-cd examples/halliday-mic-streamer
-swift run halliday-mic-streamer \
-  --host homeassistant.local \
-  --port 8123 \
-  --ha-token <your_home_assistant_token> \
-  --translate-source en \
-  --translate-target el
-```
 
 Example with Opus:
 

@@ -15,7 +15,6 @@ RUN apt-get update \
         python3-pip \
         unzip \
     && python3 -m pip install --no-cache-dir --break-system-packages \
-        libretranslate==1.6.1 \
         opuslib==3.0.1 \
         vosk==0.3.45 \
         websockets==12.0 \
