@@ -95,24 +95,24 @@ If `translate_url` stays on `127.0.0.1`, the add-on starts LibreTranslate inside
 - `whisplaybot_auto_final_min_seconds`: default `2`
 - `whisplaybot_auto_final_silence_level`: default `900`
 - `whisplaybot_cleanup_enabled`: optional final-text cleanup for WhisplayBot output
-- `whisplaybot_cleanup_url`: default `http://192.168.2.29:8090/llm/qwen`
+- `whisplaybot_cleanup_url`: default `http://192.168.2.29:8000/api/chat`
 - `whisplaybot_cleanup_model`: default `qwen3.5`
 - `whisplaybot_cleanup_prompt`: optional override for the cleanup instruction
 - `whisplaybot_cleanup_timeout_seconds`: default `12`
 
-The Raspberry Pi bridge route from the reference project is:
+The reference project shows the Raspberry Pi Qwen upstream configured as:
 
 ```text
-POST http://192.168.2.29:8090/llm/qwen
+POST http://192.168.2.29:8000/api/chat
 ```
 
-with request body:
+The old bridge tries chat-style payloads first, for example:
 
 ```json
-{"text":"raw transcript","systemPrompt":"optional cleanup prompt"}
+{"messages":[{"role":"system","content":"cleanup prompt"},{"role":"user","content":"raw transcript"}],"stream":false}
 ```
 
-and response body:
+and it accepts text from fields like:
 
 ```json
 {"response":"cleaned sentence"}

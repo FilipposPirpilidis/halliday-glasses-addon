@@ -195,42 +195,79 @@ class TranscriptCleaner:
             "Return only the corrected sentence."
         )
 
-        payload = self.build_payload(text, system_prompt)
-        request = Request(
-            self.cfg.whisplaybot_cleanup_url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
         def _request() -> str:
-            with urlopen(request, timeout=max(self.cfg.whisplaybot_cleanup_timeout_seconds, 5.0)) as response:
-                body = response.read().decode("utf-8")
-                decoded = json.loads(body)
-                cleaned = self.parse_response(decoded, body)
-                if not cleaned:
-                    raise RuntimeError(f"Cleanup response missing content: {body}")
-                return cleaned
+            attempts: list[str] = []
+            for payload in self.build_payloads(text, system_prompt):
+                request = Request(
+                    self.cfg.whisplaybot_cleanup_url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    with urlopen(request, timeout=max(self.cfg.whisplaybot_cleanup_timeout_seconds, 5.0)) as response:
+                        body = response.read().decode("utf-8")
+                        decoded = json.loads(body)
+                        cleaned = self.parse_response(decoded, body)
+                        if cleaned:
+                            return cleaned
+                        attempts.append(f"200:{body}")
+                except HTTPError as err:
+                    body = err.read().decode("utf-8", errors="replace")
+                    attempts.append(f"{err.code}:{body}")
+                    if err.code == 400 and "invalid" in body.lower():
+                        continue
+                    raise RuntimeError(f"WhisplayBot cleanup HTTP {err.code}: {body}") from err
+            raise RuntimeError(f"WhisplayBot cleanup returned no text. Attempts: {' | '.join(attempts)}")
 
         try:
             return await asyncio.to_thread(_request)
-        except HTTPError as err:
-            body = err.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"WhisplayBot cleanup HTTP {err.code}: {body}") from err
         except URLError as err:
             raise RuntimeError(f"WhisplayBot cleanup request failed: {err}") from err
 
-    def build_payload(self, text: str, system_prompt: str) -> bytes:
+    def build_payloads(self, text: str, system_prompt: str) -> list[dict[str, Any]]:
         url = self.cfg.whisplaybot_cleanup_url.lower()
         if url.endswith("/llm/qwen") or "/llm/qwen?" in url:
-            return json.dumps(
+            return [
                 {
                     "text": text,
                     "systemPrompt": system_prompt,
                 }
-            ).encode("utf-8")
+            ]
 
-        return json.dumps(
+        if "/api/chat" in url:
+            return [
+                {
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": text},
+                    ],
+                    "stream": False,
+                },
+                {
+                    "messages": [
+                        {"role": "user", "content": text},
+                    ],
+                    "stream": False,
+                },
+                {
+                    "messages": [
+                        {"content": text},
+                    ],
+                    "stream": False,
+                },
+            ]
+
+        if "/api/generate" in url:
+            return [
+                {"prompt": text, "system_prompt": system_prompt, "stream": False},
+                {"message": text, "system_prompt": system_prompt, "stream": False},
+                {"text": text, "system_prompt": system_prompt, "stream": False},
+                {"query": text, "system_prompt": system_prompt, "stream": False},
+                {"input": text, "system_prompt": system_prompt, "stream": False},
+            ]
+
+        return [
             {
                 "model": self.cfg.whisplaybot_cleanup_model,
                 "temperature": 0,
@@ -239,26 +276,35 @@ class TranscriptCleaner:
                     {"role": "user", "content": text},
                 ],
             }
-        ).encode("utf-8")
+        ]
 
     def parse_response(self, decoded: dict[str, Any], raw_body: str) -> str:
-        direct = normalize_cleanup_text(str(decoded.get("response") or ""))
-        if direct:
-            return direct
+        for key in ("response", "text", "content", "result", "output", "message"):
+            direct = normalize_cleanup_text(self.extract_text(decoded.get(key)))
+            if direct:
+                return direct
 
         choices = decoded.get("choices") or []
         if not choices:
-            raise RuntimeError(f"Cleanup response missing choices: {raw_body}")
+            raise RuntimeError(f"Cleanup response missing content: {raw_body}")
         message = choices[0].get("message") or {}
-        content = message.get("content") or ""
-        if isinstance(content, list):
-            text_parts = [
-                str(item.get("text", "")).strip()
-                for item in content
-                if isinstance(item, dict) and item.get("type") == "text"
-            ]
-            content = " ".join(part for part in text_parts if part)
-        return normalize_cleanup_text(str(content))
+        return normalize_cleanup_text(self.extract_text(message.get("content")))
+
+    def extract_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            for key in ("text", "content", "response", "result", "output", "message"):
+                nested = self.extract_text(value.get(key))
+                if nested:
+                    return nested
+            return ""
+        if isinstance(value, list):
+            parts = [self.extract_text(item).strip() for item in value]
+            return " ".join(part for part in parts if part)
+        return str(value)
 
 
 class AudioDecoder:

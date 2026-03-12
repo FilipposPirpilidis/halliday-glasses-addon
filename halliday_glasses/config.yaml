@@ -41,7 +41,7 @@ options:
   whisplaybot_auto_final_min_seconds: 2
   whisplaybot_auto_final_silence_level: 900
   whisplaybot_cleanup_enabled: false
-  whisplaybot_cleanup_url: "http://192.168.2.29:8090/llm/qwen"
+  whisplaybot_cleanup_url: "http://192.168.2.29:8000/api/chat"
   whisplaybot_cleanup_model: "qwen3.5"
   whisplaybot_cleanup_prompt: ""
   whisplaybot_cleanup_timeout_seconds: 12
